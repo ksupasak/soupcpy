@@ -1,0 +1,9 @@
+# Global ignores
+.DS_Store
+
+# Rust build artifacts
+**/target/
+
+# Local databases
+**/db/*.db
+**/db/*.sqlite

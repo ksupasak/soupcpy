@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Channel Manager</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        min-height: 100vh;
+      }
+      a {
+        color: #60a5fa;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 10px 40px rgba(15, 23, 42, 0.35);
+      }
+      h1,
+      h2 {
+        margin: 0 0 0.75rem 0;
+      }
+      form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+        align-items: end;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.9rem;
+        gap: 0.4rem;
+      }
+      input,
+      select {
+        padding: 0.6rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.6);
+        color: inherit;
+      }
+      button {
+        background: #2563eb;
+        border: none;
+        color: white;
+        padding: 0.65rem 1.2rem;
+        border-radius: 8px;
+        font-size: 1rem;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button.secondary {
+        background: transparent;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.65rem 0.8rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+        font-size: 0.95rem;
+      }
+      tr:hover {
+        background: rgba(30, 41, 59, 0.5);
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .status {
+        min-height: 1.25rem;
+        font-size: 0.9rem;
+        color: #fbbf24;
+      }
+      .status.ok {
+        color: #34d399;
+      }
+      .status.error {
+        color: #f87171;
+      }
+      .import-export {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+      }
+      .import-export input[type="file"] {
+        max-width: 240px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="card">
+      <h1>Channel Configuration</h1>
+      <p>
+        Manage channels stored in the local SQLite database. Changes are applied immediately. Return to the
+        <a href="/">dashboard</a>.
+      </p>
+      <div id="status" class="status"></div>
+    </header>
+
+    <section class="card">
+      <h2>Add or Update Channel</h2>
+      <form id="channel-form">
+        <input type="hidden" id="channel-id" />
+
+        <label>
+          Name
+          <input id="channel-name" name="name" required />
+        </label>
+        <label>
+          UDID / Endpoint
+          <input id="channel-udid" name="udid" required />
+        </label>
+        <label>
+          Group
+          <input id="channel-group" name="group" required />
+        </label>
+        <label>
+          Code
+          <input id="channel-code" name="code" required />
+        </label>
+        <label>
+          Gateway
+          <input id="channel-gw" name="gw" type="number" min="0" step="1" required />
+        </label>
+
+        <div class="actions">
+          <button type="submit" id="submit-button">Create Channel</button>
+          <button type="button" class="secondary" id="reset-button">Reset</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Channels</h2>
+      <div class="import-export">
+        <button type="button" id="export-button">Export CSV</button>
+        <label>
+          Import CSV
+          <input type="file" id="import-file" accept=".csv,text/csv" />
+        </label>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>UDID</th>
+            <th>Group</th>
+            <th>Code</th>
+            <th>GW</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="channel-table-body"></tbody>
+      </table>
+    </section>
+
+    <template id="channel-row-template">
+      <tr>
+        <td class="channel-name"></td>
+        <td class="channel-udid"></td>
+        <td class="channel-group"></td>
+        <td class="channel-code"></td>
+        <td class="channel-gw"></td>
+        <td>
+          <div class="actions">
+            <button type="button" class="secondary edit-button">Edit</button>
+            <button type="button" class="secondary duplicate-button">Duplicate</button>
+            <button type="button" class="secondary delete-button">Delete</button>
+          </div>
+        </td>
+      </tr>
+    </template>
+
+    <script>
+      const apiBase = "/api/channels";
+      const tableBody = document.getElementById("channel-table-body");
+      const template = document.getElementById("channel-row-template");
+      const form = document.getElementById("channel-form");
+      const submitButton = document.getElementById("submit-button");
+      const resetButton = document.getElementById("reset-button");
+      const statusText = document.getElementById("status");
+      const importFileInput = document.getElementById("import-file");
+      const exportButton = document.getElementById("export-button");
+
+      const idField = document.getElementById("channel-id");
+      const nameField = document.getElementById("channel-name");
+      const udidField = document.getElementById("channel-udid");
+      const groupField = document.getElementById("channel-group");
+      const codeField = document.getElementById("channel-code");
+      const gwField = document.getElementById("channel-gw");
+
+      function setStatus(message, type = "") {
+        statusText.textContent = message;
+        statusText.className = `status ${type}`;
+      }
+
+      async function loadChannels() {
+        try {
+          const response = await fetch(apiBase);
+          if (!response.ok) {
+            throw new Error(`Failed to load channels (${response.status})`);
+          }
+          const channels = await response.json();
+          renderTable(channels);
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, "error");
+        }
+      }
+
+      function renderTable(channels) {
+        tableBody.innerHTML = "";
+        channels.forEach((channel) => {
+          const row = template.content.firstElementChild.cloneNode(true);
+          row.dataset.id = channel.id;
+          row.querySelector(".channel-name").textContent = channel.name;
+          row.querySelector(".channel-udid").textContent = channel.udid;
+          row.querySelector(".channel-group").textContent = channel.group;
+          row.querySelector(".channel-code").textContent = channel.code;
+          row.querySelector(".channel-gw").textContent = channel.gw;
+
+          row.querySelector(".edit-button").addEventListener("click", () => populateForm(channel));
+          row.querySelector(".duplicate-button").addEventListener("click", () =>
+            handleDuplicate(channel)
+          );
+          row.querySelector(".delete-button").addEventListener("click", () => handleDelete(channel));
+          tableBody.appendChild(row);
+        });
+      }
+
+      function populateForm(channel) {
+        idField.value = channel.id;
+        nameField.value = channel.name;
+        udidField.value = channel.udid;
+        groupField.value = channel.group;
+        codeField.value = channel.code;
+        gwField.value = channel.gw;
+        submitButton.textContent = "Update Channel";
+        setStatus(`Editing ${channel.name}`);
+      }
+
+      function resetForm() {
+        form.reset();
+        idField.value = "";
+        submitButton.textContent = "Create Channel";
+        setStatus("Ready", "ok");
+      }
+
+      async function handleSubmit(event) {
+        event.preventDefault();
+        const payload = {
+          name: nameField.value,
+          udid: udidField.value,
+          group: groupField.value,
+          code: codeField.value,
+          gw: Number(gwField.value),
+        };
+
+        const channelId = idField.value;
+        const isUpdate = Boolean(channelId);
+        const url = isUpdate ? `${apiBase}/${channelId}` : apiBase;
+        const method = isUpdate ? "PUT" : "POST";
+
+        try {
+          const response = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!response.ok) {
+            const errorPayload = await response.json().catch(() => ({}));
+            const message = errorPayload?.message || (await response.text());
+            throw new Error(message || `Request failed (${response.status})`);
+          }
+
+          await loadChannels();
+          resetForm();
+          setStatus(isUpdate ? "Channel updated" : "Channel created", "ok");
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, "error");
+        }
+      }
+
+      async function handleDuplicate(channel) {
+        try {
+          setStatus(`Duplicating ${channel.name}...`);
+          const response = await fetch(`${apiBase}/${channel.id}/duplicate`, { method: "POST" });
+          if (!response.ok) {
+            const message = await response.text();
+            throw new Error(message || `Failed to duplicate channel (${response.status})`);
+          }
+          const duplicated = await response.json();
+          await loadChannels();
+          setStatus(`Duplicated ${channel.name} as ${duplicated.name}`, "ok");
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, "error");
+        }
+      }
+
+      async function handleDelete(channel) {
+        const confirmation = confirm(`Delete channel "${channel.name}"?`);
+        if (!confirmation) return;
+        try {
+          const response = await fetch(`${apiBase}/${channel.id}`, { method: "DELETE" });
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || `Failed to delete channel (${response.status})`);
+          }
+          await loadChannels();
+          if (String(idField.value) === String(channel.id)) {
+            resetForm();
+          }
+          setStatus(`Deleted ${channel.name}`, "ok");
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, "error");
+        }
+      }
+
+      async function handleExport() {
+        try {
+          const response = await fetch(`${apiBase}/export`);
+          if (!response.ok) {
+            throw new Error(`Export failed (${response.status})`);
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "channels.csv";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+          setStatus("Export complete", "ok");
+        } catch (error) {
+          console.error(error);
+          setStatus(error.message, "error");
+        }
+      }
+
+      function handleImportChange(event) {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const csvContent = e.target?.result;
+          if (typeof csvContent !== "string") {
+            setStatus("Invalid CSV content", "error");
+            return;
+          }
+          try {
+            const response = await fetch(`${apiBase}/import`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ csv: csvContent }),
+            });
+            if (!response.ok) {
+              const message = await response.text();
+              throw new Error(message || `Import failed (${response.status})`);
+            }
+            await loadChannels();
+            setStatus("Import complete", "ok");
+          } catch (error) {
+            console.error(error);
+            setStatus(error.message, "error");
+          } finally {
+            importFileInput.value = "";
+          }
+        };
+        reader.readAsText(file);
+      }
+
+      form.addEventListener("submit", handleSubmit);
+      resetButton.addEventListener("click", resetForm);
+      importFileInput.addEventListener("change", handleImportChange);
+      exportButton.addEventListener("click", handleExport);
+
+      loadChannels().then(() => setStatus("Ready", "ok"));
+    </script>
+  </body>
+</html>

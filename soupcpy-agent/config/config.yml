@@ -1,0 +1,8 @@
+index_html_path: "templates/index.html"
+channels_html_path: "templates/channels.html"
+controller_endpoint: "ws://localhost:3000/ws/controller"
+agent_udid: "1"
+bridge_remote_url: "ws://127.0.0.1:8000/?action=proxy-adb&remote=tcp%3A8886"
+publisher_endpoint: "ws://127.0.0.1:3000/ws/publisher"
+heartbeat_seconds: 25
+database_path: "db/app.db"

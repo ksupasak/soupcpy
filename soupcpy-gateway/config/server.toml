@@ -1,0 +1,9 @@
+# Gateway server configuration
+# The server binds to `host:port`. Update these values to match the desired interface.
+host = "127.0.0.1"
+port = 3000
+
+# Optional public overrides used to build stream links in the dashboard.
+# public_host = "192.168.1.10"
+# public_port = 3000
+

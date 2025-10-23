@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rust Socket Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        min-height: 100vh;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 10px 40px rgba(15, 23, 42, 0.35);
+      }
+      .status-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 600;
+      }
+      .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: #fbbf24;
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.8);
+        transition: background 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+      }
+      .status-dot.connected {
+        background: #34d399;
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.85);
+      }
+      .status-dot.disconnected,
+      .status-dot.error {
+        background: #f87171;
+        box-shadow: 0 0 12px rgba(248, 113, 113, 0.85);
+      }
+      button {
+        background: #2563eb;
+        border: none;
+        color: white;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        font-size: 1rem;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .nav-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.5rem 0.95rem;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.18);
+        color: #93c5fd;
+        text-decoration: none;
+        font-weight: 600;
+        transition: background 0.2s ease-in-out;
+      }
+      .nav-button:hover {
+        background: rgba(59, 130, 246, 0.32);
+      }
+      pre {
+        background: rgba(15, 23, 42, 0.6);
+        padding: 1rem;
+        border-radius: 8px;
+        max-height: 260px;
+        overflow-y: auto;
+        font-size: 0.9rem;
+        line-height: 1.4;
+      }
+      code {
+        color: #38bdf8;
+      }
+      form {
+        display: flex;
+        gap: 0.8rem;
+        align-items: center;
+      }
+      input[type="text"] {
+        width: min(480px, 80vw);
+        padding: 0.6rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.6);
+        color: inherit;
+      }
+      .section-title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .channel-total-label {
+        font-size: 0.9rem;
+        color: rgba(148, 163, 184, 0.9);
+      }
+      .channel-total-label span {
+        color: #38bdf8;
+        font-weight: 600;
+      }
+      .channel-groups {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .channel-card {
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 10px;
+        padding: 1rem;
+        background: rgba(30, 41, 59, 0.6);
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+      .channel-card__header {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: baseline;
+      }
+      .channel-card__header h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+      .channel-card__header span {
+        font-size: 0.85rem;
+        color: rgba(148, 163, 184, 0.85);
+      }
+      .channel-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.35rem 0.8rem;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.2);
+        color: #93c5fd;
+        font-weight: 600;
+        font-size: 0.85rem;
+        letter-spacing: 0.02em;
+      }
+      .channel-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      .channel-table thead {
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 0.7rem;
+        color: rgba(148, 163, 184, 0.75);
+      }
+      .channel-table th,
+      .channel-table td {
+        padding: 0.4rem 0.3rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+        text-align: left;
+      }
+      .channel-table tbody tr:last-child td {
+        border-bottom: none;
+      }
+      .empty-state {
+        margin: 0;
+        font-size: 0.9rem;
+        color: rgba(148, 163, 184, 0.85);
+      }
+    </style>
+
+<script defer="defer" src="/public/js/bundle.js"></script>
+<link href="/public/css/main.css" rel="stylesheet">
+  </head>
+  <body>
+    <header class="card">
+      <h1>Rust WebSocket Dashboard</h1>
+      <div class="status-indicator">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text">Connecting…</span>
+      </div>
+      <p>
+        This page connects to <code>/ws</code> and shows the live status of the connection.
+        Open your browser console to inspect network events.
+      </p>
+      <a class="nav-button" href="/multiview">Open multiview</a>
+    </header>
+
+    <section class="card">
+      <h2>Send a Message</h2>
+      <form id="chat-form">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Type a message to broadcast"
+          required
+        />
+        <button type="submit" id="send-button" disabled>Send</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>Controller Channels</h2>
+        <span class="channel-total-label">
+          Total channels:
+          <span id="channel-total">0</span>
+        </span>
+      </div>
+      <div id="channel-groups" class="channel-groups">
+        <p class="empty-state">Waiting for channel snapshots…</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Activity Log</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <script>
+      const statusDot = document.getElementById("status-dot");
+      const statusText = document.getElementById("status-text");
+      const log = document.getElementById("log");
+      const form = document.getElementById("chat-form");
+      const input = document.getElementById("chat-input");
+      const sendButton = document.getElementById("send-button");
+      const channelTotal = document.getElementById("channel-total");
+      const channelGroups = document.getElementById("channel-groups");
+      const runtimeSettings = {
+        http_base: window.location.origin,
+        ws_base: `${
+          window.location.protocol === "https:" ? "wss" : "ws"
+        }://${window.location.host}`,
+      };
+      let shouldFetchChannelsOnConnect = true;
+
+      function appendLog(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        log.textContent += `[${timestamp}] ${message}\n`;
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function setStatus(state, label) {
+        statusDot.className = `status-dot ${state}`;
+        statusText.textContent = label;
+        sendButton.disabled = state !== "connected";
+      }
+
+      function formatValue(value) {
+        if (value === undefined || value === null) {
+          return "—";
+        }
+        if (typeof value === "string" && value.trim() === "") {
+          return "—";
+        }
+        return String(value);
+      }
+
+      function formatTimestamp(epochSeconds) {
+        if (!epochSeconds) {
+          return "Just now";
+        }
+        const time = new Date(epochSeconds * 1000);
+        if (Number.isNaN(time.getTime())) {
+          return "Unknown";
+        }
+        return time.toLocaleString();
+      }
+
+      function trimTrailingSlash(value) {
+        if (typeof value !== "string") {
+          return value;
+        }
+        return value.replace(/\/+$/, "");
+      }
+
+      function buildStreamUrl(name) {
+        if (!name) {
+          return null;
+        }
+        const httpBase =
+          trimTrailingSlash(runtimeSettings.http_base) || window.location.origin;
+        const wsBase =
+          trimTrailingSlash(runtimeSettings.ws_base) ||
+          `${
+            window.location.protocol === "https:" ? "wss" : "ws"
+          }://${window.location.host}`;
+        const wsQuery = `${wsBase}/ws?action=proxy-adb&remote=tcp-8886&udid=${encodeURIComponent(
+          name
+        )}`;
+        const encodedWs = encodeURIComponent(wsQuery);
+        return `${httpBase}/stream#!action=stream&udid=${encodeURIComponent(
+          name
+        )}&player=webcodecs&ws=${encodedWs}`;
+      }
+
+      function createChannelCard(controller) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "channel-card";
+
+        const header = document.createElement("div");
+        header.className = "channel-card__header";
+
+        const titleWrap = document.createElement("div");
+        const title = document.createElement("h3");
+        title.textContent = controller.udid || "Unknown controller";
+        const updated = document.createElement("span");
+        updated.textContent = `Updated ${formatTimestamp(controller.last_updated_epoch)}`;
+        titleWrap.appendChild(title);
+        titleWrap.appendChild(updated);
+
+        const chip = document.createElement("div");
+        chip.className = "channel-chip";
+        const channelCount =
+          typeof controller.count === "number"
+            ? controller.count
+            : Array.isArray(controller.channels)
+            ? controller.channels.length
+            : 0;
+        chip.textContent = `${channelCount} channel${channelCount === 1 ? "" : "s"}`;
+
+        header.appendChild(titleWrap);
+        header.appendChild(chip);
+        wrapper.appendChild(header);
+
+        const channels = Array.isArray(controller.channels) ? controller.channels : [];
+        if (channels.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "empty-state";
+          empty.textContent = "No channels reported.";
+          wrapper.appendChild(empty);
+          return wrapper;
+        }
+
+        const table = document.createElement("table");
+        table.className = "channel-table";
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        ["ID", "Name", "Group", "Code", "UDID", "GW", "Stream"].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        channels.forEach((channel) => {
+          const row = document.createElement("tr");
+          const cells = [
+            formatValue(channel.id),
+            formatValue(channel.name),
+            formatValue(channel.group),
+            formatValue(channel.code),
+            formatValue(channel.udid),
+            formatValue(channel.gw),
+          ];
+          cells.forEach((value) => {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            row.appendChild(cell);
+          });
+          const streamCell = document.createElement("td");
+          const streamUrl = buildStreamUrl(channel.name);
+          if (streamUrl) {
+            const link = document.createElement("a");
+            link.href = streamUrl;
+            link.textContent = "Open Stream";
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            streamCell.appendChild(link);
+          } else {
+            streamCell.textContent = "—";
+          }
+          row.appendChild(streamCell);
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        wrapper.appendChild(table);
+
+        return wrapper;
+      }
+
+      function renderChannels(overview) {
+        if (!overview || typeof overview !== "object") {
+          return;
+        }
+        const controllers = Array.isArray(overview.controllers) ? overview.controllers : [];
+        channelTotal.textContent =
+          overview.total_channels !== undefined ? overview.total_channels : 0;
+
+        if (controllers.length === 0) {
+          channelGroups.innerHTML = "";
+          const empty = document.createElement("p");
+          empty.className = "empty-state";
+          empty.textContent = "Waiting for channel snapshots…";
+          channelGroups.appendChild(empty);
+          return;
+        }
+
+        channelGroups.innerHTML = "";
+        controllers.forEach((controller) => {
+          channelGroups.appendChild(createChannelCard(controller));
+        });
+      }
+
+      function handleStructuredMessage(raw) {
+        if (typeof raw !== "string") {
+          return false;
+        }
+        const trimmed = raw.trim();
+        if (!trimmed.startsWith("{")) {
+          return false;
+        }
+
+        try {
+          const payload = JSON.parse(trimmed);
+          if (payload && payload.event === "channels_snapshot_update") {
+            if (payload.overview) {
+              renderChannels(payload.overview);
+            }
+            const controllers = Array.isArray(payload.overview?.controllers)
+              ? payload.overview.controllers
+              : [];
+            const controller = controllers.find(
+              (item) => item.udid === payload.controller_udid
+            );
+            let reported = 0;
+            if (controller) {
+              if (typeof controller.count === "number") {
+                reported = controller.count;
+              } else if (Array.isArray(controller.channels)) {
+                reported = controller.channels.length;
+              }
+            }
+            appendLog(
+              `Updated channels for ${payload.controller_udid || "unknown"} (${reported} reported)`
+            );
+            return true;
+          }
+        } catch (_error) {
+          return false;
+        }
+
+        return false;
+      }
+
+      async function loadSettings() {
+        try {
+          const response = await fetch("/api/settings");
+          if (!response.ok) {
+            throw new Error(`Unexpected status: ${response.status}`);
+          }
+          const settings = await response.json();
+          if (settings && typeof settings === "object") {
+            if (typeof settings.http_base === "string" && settings.http_base.trim() !== "") {
+              runtimeSettings.http_base = settings.http_base;
+            }
+            if (typeof settings.ws_base === "string" && settings.ws_base.trim() !== "") {
+              runtimeSettings.ws_base = settings.ws_base;
+            }
+          }
+        } catch (_error) {
+          appendLog("Falling back to browser location for runtime settings.");
+        }
+      }
+
+      async function loadInitialChannels() {
+        try {
+          const response = await fetch("/api/channels");
+          if (!response.ok) {
+            throw new Error(`Unexpected status: ${response.status}`);
+          }
+          const overview = await response.json();
+          renderChannels(overview);
+          shouldFetchChannelsOnConnect = false;
+        } catch (_error) {
+          // Ignore initial load failures; a snapshot will arrive over the socket.
+        }
+      }
+
+      function connectSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const socketUrl = `${protocol}://${window.location.host}/ws`;
+
+        appendLog(`Connecting to ${socketUrl}`);
+        setStatus("connecting", "Connecting…");
+
+        const ws = new WebSocket(socketUrl);
+
+        ws.addEventListener("open", () => {
+          appendLog("WebSocket connection established.");
+          setStatus("connected", "Connected");
+          if (shouldFetchChannelsOnConnect) {
+            loadInitialChannels();
+          }
+        });
+
+        ws.addEventListener("message", (event) => {
+          if (!handleStructuredMessage(event.data)) {
+            appendLog(`Received: ${event.data}`);
+          }
+        });
+
+        ws.addEventListener("close", (event) => {
+          appendLog(`Connection closed (${event.code}). Reconnecting…`);
+          setStatus("disconnected", "Disconnected – retrying");
+          shouldFetchChannelsOnConnect = true;
+          setTimeout(connectSocket, 1200);
+        });
+
+        ws.addEventListener("error", (event) => {
+          console.error("WebSocket error:", event);
+          appendLog("Connection error encountered.");
+          setStatus("error", "Error – check console");
+        });
+
+        form.onsubmit = (evt) => {
+          evt.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(input.value);
+            appendLog(`Sent: ${input.value}`);
+            input.value = "";
+          } else {
+            appendLog("Cannot send message: socket not open.");
+          }
+        };
+      }
+
+      (async () => {
+        await loadSettings();
+        await loadInitialChannels();
+        connectSocket();
+      })();
+    </script>
+  </body>
+</html>

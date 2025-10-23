@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Multi Stream View</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        min-height: 100vh;
+      }
+      a {
+        color: inherit;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 10px 40px rgba(15, 23, 42, 0.35);
+      }
+      .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .page-header h1 {
+        margin: 0;
+        font-size: clamp(1.5rem, 2vw + 1rem, 2.2rem);
+      }
+      .page-header p {
+        margin: 0.15rem 0 0;
+        color: rgba(148, 163, 184, 0.85);
+        font-size: 0.95rem;
+      }
+      .nav-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.5rem 0.95rem;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.18);
+        color: #93c5fd;
+        text-decoration: none;
+        font-weight: 600;
+        transition: background 0.2s ease-in-out;
+      }
+      .nav-link:hover {
+        background: rgba(59, 130, 246, 0.32);
+      }
+      .status-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        font-size: 0.95rem;
+      }
+      .status-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 600;
+      }
+      .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: #fbbf24;
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.8);
+        transition: background 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+      }
+      .status-dot.connected {
+        background: #34d399;
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.85);
+      }
+      .status-dot.disconnected,
+      .status-dot.error {
+        background: #f87171;
+        box-shadow: 0 0 12px rgba(248, 113, 113, 0.85);
+      }
+      .stream-count {
+        color: rgba(148, 163, 184, 0.85);
+      }
+      .stream-count span {
+        color: #38bdf8;
+        font-weight: 600;
+      }
+      .stream-grid {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      }
+      .stream-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        background: rgba(30, 41, 59, 0.75);
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 14px;
+        padding: 1rem;
+        min-height: 400px;
+      }
+      .stream-card__header {
+        display: flex;
+        flex-direction: column;
+  
+        gap: 0.2rem;
+      }
+      .stream-card__title {
+        margin: 0;
+        font-size: 1rem;
+      }
+      .stream-card__meta {
+        margin: 0;
+        color: rgba(148, 163, 184, 0.75);
+        font-size: 0.85rem;
+      }
+      iframe {
+        width: 100%;
+        height: 100%;
+        /* aspect-ratio: 16 / 9; */
+        border: none;
+        border-radius: 12px;
+        background: #020617;
+      }
+      .empty-state {
+        margin: 0;
+        font-size: 0.95rem;
+        color: rgba(148, 163, 184, 0.85);
+      }
+    </style>
+    <script defer="defer" src="/public/js/bundle.js"></script>
+    <link href="/public/css/main.css" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="card page-header">
+      <div>
+        <h1>Multi Stream View</h1>
+        <p>Monitor every reported stream in parallel.</p>
+      </div>
+      <a class="nav-link" href="/">← Back to dashboard</a>
+    </header>
+
+    <section class="card status-bar">
+      <div class="status-indicator">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text">Connecting…</span>
+      </div>
+      <div class="stream-count">
+        Active streams: <span id="stream-count">0</span>
+      </div>
+    </section>
+
+    <main id="stream-grid" class="stream-grid"></main>
+    <p id="empty-state" class="empty-state">Waiting for channel snapshots…</p>
+
+    <script>
+      const runtimeSettings = {
+        http_base: "",
+        ws_base: "",
+      };
+
+      const statusDot = document.getElementById("status-dot");
+      const statusText = document.getElementById("status-text");
+      const streamGrid = document.getElementById("stream-grid");
+      const streamCount = document.getElementById("stream-count");
+      const emptyState = document.getElementById("empty-state");
+
+      let shouldFetchChannelsOnConnect = true;
+
+      function setStatus(state, text) {
+        statusDot.classList.remove("connected", "disconnected", "error");
+        if (state) {
+          statusDot.classList.add(state);
+        }
+        statusText.textContent = text;
+      }
+
+      function trimTrailingSlash(value) {
+        if (typeof value !== "string") {
+          return value;
+        }
+        return value.replace(/\/+$/, "");
+      }
+
+      function buildStreamUrl(udid) {
+        if (!udid) {
+          return null;
+        }
+        const httpBase =
+          trimTrailingSlash(runtimeSettings.http_base) || window.location.origin;
+        const wsBase =
+          trimTrailingSlash(runtimeSettings.ws_base) ||
+          `${
+            window.location.protocol === "https:" ? "wss" : "ws"
+          }://${window.location.host}`;
+        const wsQuery = `${wsBase}/ws?action=proxy-adb&remote=tcp-8886&udid=${encodeURIComponent(
+          udid
+        )}`;
+        const encodedWs = encodeURIComponent(wsQuery);
+        return `${httpBase}/stream#!action=stream&udid=${encodeURIComponent(
+          udid
+        )}&player=webcodecs&ws=${encodedWs}`;
+      }
+
+      function renderStreams(overview) {
+        const controllers = Array.isArray(overview?.controllers)
+          ? overview.controllers
+          : [];
+
+        const cards = [];
+        controllers.forEach((controller) => {
+          if (!Array.isArray(controller.channels)) {
+            return;
+          }
+          controller.channels.forEach((channel) => {
+            const streamUrl = buildStreamUrl(channel?.name);
+            if (!streamUrl) {
+              return;
+            }
+            cards.push({
+              controller,
+              channel,
+              streamUrl,
+            });
+          });
+        });
+
+        streamGrid.innerHTML = "";
+        if (cards.length === 0) {
+          streamCount.textContent = "0";
+          emptyState.style.display = "block";
+          return;
+        }
+
+        emptyState.style.display = "none";
+        streamCount.textContent = String(cards.length);
+
+        cards.forEach(({ controller, channel, streamUrl }) => {
+          const card = document.createElement("article");
+          card.className = "stream-card";
+
+          const header = document.createElement("div");
+          header.className = "stream-card__header";
+
+          const title = document.createElement("h2");
+          title.className = "stream-card__title";
+          title.textContent = channel?.name || channel?.udid || "Unknown stream";
+          header.appendChild(title);
+
+          const meta = document.createElement("p");
+          meta.className = "stream-card__meta";
+          const label =
+            controller?.udid && controller.udid.trim() !== ""
+              ? controller.udid
+              : "unknown controller";
+          meta.textContent = `Controller: ${label}`;
+          header.appendChild(meta);
+
+          card.appendChild(header);
+
+          const iframe = document.createElement("iframe");
+          iframe.src = streamUrl;
+          iframe.loading = "lazy";
+          iframe.allowFullscreen = true;
+          iframe.referrerPolicy = "no-referrer";
+          card.appendChild(iframe);
+
+          streamGrid.appendChild(card);
+        });
+      }
+
+      function handleStructuredMessage(raw) {
+        // if (typeof raw !== "string") {
+        //   return false;
+        // }
+        // const trimmed = raw.trim();
+        // if (!trimmed.startsWith("{")) {
+        //   return false;
+        // }
+
+        // try {
+        //   const payload = JSON.parse(trimmed);
+        //   if (payload?.event === "channels_snapshot_update" && payload.overview) {
+        //     renderStreams(payload.overview);
+        //     return true;
+        //   }
+        // } catch (_error) {
+        //   return false;
+        // }
+
+        return false;
+      }
+
+      async function loadSettings() {
+        try {
+          const response = await fetch("/api/settings");
+          if (!response.ok) {
+            throw new Error(`Unexpected status: ${response.status}`);
+          }
+          const settings = await response.json();
+          if (settings && typeof settings === "object") {
+            if (typeof settings.http_base === "string" && settings.http_base.trim() !== "") {
+              runtimeSettings.http_base = settings.http_base;
+            }
+            if (typeof settings.ws_base === "string" && settings.ws_base.trim() !== "") {
+              runtimeSettings.ws_base = settings.ws_base;
+            }
+          }
+        } catch (_error) {
+          // Fall back to window location when settings cannot be loaded.
+        }
+      }
+
+      async function loadInitialChannels() {
+        try {
+          const response = await fetch("/api/channels");
+          if (!response.ok) {
+            throw new Error(`Unexpected status: ${response.status}`);
+          }
+          const overview = await response.json();
+          renderStreams(overview);
+          shouldFetchChannelsOnConnect = false;
+        } catch (_error) {
+          // Ignore initial load failures; a snapshot will arrive over the socket.
+        }
+      }
+
+      function connectSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const socketUrl = `${protocol}://${window.location.host}/ws`;
+
+        setStatus("", "Connecting…");
+
+        const ws = new WebSocket(socketUrl);
+
+        ws.addEventListener("open", () => {
+          setStatus("connected", "Connected");
+          if (shouldFetchChannelsOnConnect) {
+            loadInitialChannels();
+          }
+        });
+
+        ws.addEventListener("message", (event) => {
+          handleStructuredMessage(event.data);
+        });
+
+        ws.addEventListener("close", () => {
+          setStatus("disconnected", "Disconnected – retrying…");
+          shouldFetchChannelsOnConnect = true;
+          setTimeout(connectSocket, 1200);
+        });
+
+        ws.addEventListener("error", () => {
+          setStatus("error", "Connection error");
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", async () => {
+        setStatus("", "Connecting…");
+        await loadSettings();
+        await loadInitialChannels();
+        connectSocket();
+      });
+    </script>
+  </body>
+</html>

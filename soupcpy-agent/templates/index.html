@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        min-height: 100vh;
+      }
+      a {
+        color: #60a5fa;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 10px 40px rgba(15, 23, 42, 0.35);
+      }
+      .hero {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: center;
+      }
+      .hero-actions {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+      }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+        padding: 0.6rem 1.3rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        font-weight: 600;
+        background: rgba(37, 99, 235, 0.9);
+        color: #e2e8f0;
+        cursor: pointer;
+        text-decoration: none;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .button.secondary {
+        background: transparent;
+      }
+      .button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .status-banner {
+        padding: 0.75rem 1rem;
+        border-radius: 10px;
+        font-size: 0.95rem;
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      .status-banner.ok {
+        border-color: rgba(74, 222, 128, 0.45);
+        color: #4ade80;
+      }
+      .status-banner.error {
+        border-color: rgba(248, 113, 113, 0.45);
+        color: #f87171;
+      }
+      .status-banner.info {
+        border-color: rgba(96, 165, 250, 0.45);
+        color: #93c5fd;
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+      }
+      .metric-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+      .metric-label {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #94a3b8;
+      }
+      .metric-value {
+        font-size: 1.9rem;
+        font-weight: 700;
+      }
+      .metric-caption {
+        font-size: 0.85rem;
+        color: #94a3b8;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.65rem 0.8rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+        font-size: 0.95rem;
+      }
+      th {
+        color: #a5b4fc;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      tr:hover td {
+        background: rgba(30, 41, 59, 0.5);
+      }
+      .table-empty {
+        text-align: center;
+        padding: 1.2rem 0;
+        color: #94a3b8;
+      }
+      pre {
+        background: rgba(15, 23, 42, 0.6);
+        padding: 1rem;
+        border-radius: 8px;
+        max-height: 260px;
+        overflow-y: auto;
+        font-size: 0.9rem;
+        line-height: 1.45;
+      }
+      form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem;
+        align-items: center;
+        margin-top: 1rem;
+      }
+      input[type="text"] {
+        flex: 1 1 240px;
+        min-width: 200px;
+        padding: 0.6rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.6);
+        color: inherit;
+      }
+      .socket-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 600;
+      }
+      .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: #fbbf24;
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.8);
+        transition: background 0.2s ease, box-shadow 0.2s ease;
+      }
+      .status-dot.connected {
+        background: #34d399;
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.85);
+      }
+      .status-dot.disconnected,
+      .status-dot.error {
+        background: #f87171;
+        box-shadow: 0 0 12px rgba(248, 113, 113, 0.85);
+      }
+      @media (max-width: 720px) {
+        body {
+          padding: 1.5rem;
+        }
+        .hero-actions {
+          width: 100%;
+          justify-content: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="card hero">
+      <div>
+        <h1>Agent Dashboard</h1>
+        <p>Monitor channel inventory, heartbeat health, and live socket activity.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button" href="/channels">Manage Channels</a>
+        <button class="button secondary" id="refresh-button">Refresh Now</button>
+      </div>
+    </header>
+
+    <div id="status-message" class="status-banner info">Loading dashboard…</div>
+
+    <section class="metrics-grid">
+      <article class="card metric-card">
+        <span class="metric-label">Total Channels</span>
+        <span class="metric-value" id="channel-count">--</span>
+        <span class="metric-caption">Latest sync at <span id="last-sync">--</span></span>
+      </article>
+      <article class="card metric-card">
+        <span class="metric-label">Unique Groups</span>
+        <span class="metric-value" id="group-count">--</span>
+        <span class="metric-caption">Based on active channel assignments</span>
+      </article>
+      <article class="card metric-card">
+        <span class="metric-label">Service Uptime</span>
+        <span class="metric-value" id="uptime">--</span>
+        <span class="metric-caption">Reported by <code>/health</code></span>
+      </article>
+      <article class="card metric-card">
+        <span class="metric-label">Heartbeat Interval</span>
+        <span class="metric-value" id="heartbeat-seconds">--s</span>
+        <span class="metric-caption">Pulled from configuration</span>
+      </article>
+    </section>
+
+    <section class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem">
+        <h2>Channel Snapshot</h2>
+        <span id="channel-total-label" style="color: #94a3b8; font-size: 0.9rem">Awaiting data…</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>UDID</th>
+            <th>Group</th>
+            <th>Gateway</th>
+          </tr>
+        </thead>
+        <tbody id="channel-table-body">
+          <tr>
+            <td colspan="4" class="table-empty">Fetching channel inventory…</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem">
+        <h2>Live Activity</h2>
+        <div class="socket-status">
+          <span id="socket-status-dot" class="status-dot"></span>
+          <span id="socket-status-text">Connecting…</span>
+        </div>
+      </div>
+      <pre id="log"></pre>
+      <form id="chat-form">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Broadcast a message to subscribers"
+          required
+        />
+        <button type="submit" class="button" id="send-button" disabled>Send</button>
+      </form>
+    </section>
+
+    <script>
+      const statusBanner = document.getElementById("status-message");
+      const channelCountEl = document.getElementById("channel-count");
+      const groupCountEl = document.getElementById("group-count");
+      const heartbeatEl = document.getElementById("heartbeat-seconds");
+      const uptimeEl = document.getElementById("uptime");
+      const lastSyncEl = document.getElementById("last-sync");
+      const channelTableBody = document.getElementById("channel-table-body");
+      const channelTotalLabel = document.getElementById("channel-total-label");
+      const refreshButton = document.getElementById("refresh-button");
+
+      const socketStatusDot = document.getElementById("socket-status-dot");
+      const socketStatusText = document.getElementById("socket-status-text");
+      const log = document.getElementById("log");
+      const form = document.getElementById("chat-form");
+      const input = document.getElementById("chat-input");
+      const sendButton = document.getElementById("send-button");
+
+      const REFRESH_INTERVAL_MS = 15000;
+      let refreshTimer = null;
+
+      function setBanner(message, tone = "") {
+        statusBanner.textContent = message;
+        statusBanner.className = `status-banner ${tone}`;
+      }
+
+      function formatTime(value) {
+        return value.toLocaleTimeString();
+      }
+
+      function formatDuration(seconds) {
+        if (typeof seconds !== "number" || Number.isNaN(seconds)) return "--";
+        const totalMinutes = Math.floor(seconds / 60);
+        const hrs = Math.floor(totalMinutes / 60);
+        const mins = totalMinutes % 60;
+        const secs = Math.floor(seconds % 60);
+        if (hrs > 0) {
+          return `${hrs}h ${mins}m`;
+        }
+        if (mins > 0) {
+          return `${mins}m ${secs}s`;
+        }
+        return `${secs}s`;
+      }
+
+      function renderChannelTable(channels) {
+        channelTableBody.innerHTML = "";
+        if (!channels.length) {
+          channelTableBody.innerHTML =
+            '<tr><td colspan="4" class="table-empty">No channels configured yet.</td></tr>';
+          return;
+        }
+        const sorted = [...channels].sort((a, b) => a.name.localeCompare(b.name));
+        const sample = sorted.slice(0, 12);
+        for (const channel of sample) {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${channel.name}</td>
+            <td>${channel.udid}</td>
+            <td>${channel.group}</td>
+            <td>${channel.gw}</td>
+          `;
+          channelTableBody.appendChild(row);
+        }
+        if (sorted.length > sample.length) {
+          const remaining = sorted.length - sample.length;
+          const row = document.createElement("tr");
+          row.innerHTML = `<td colspan="4" class="table-empty">…and ${remaining} more channel${
+            remaining === 1 ? "" : "s"
+          }.</td>`;
+          channelTableBody.appendChild(row);
+        }
+      }
+
+      async function refreshChannels(showLoading = false) {
+        if (showLoading) {
+          setBanner("Refreshing channel snapshot…", "info");
+        }
+        try {
+          const response = await fetch("/api/channels");
+          if (!response.ok) {
+            throw new Error(`Failed to load channels (${response.status})`);
+          }
+          const channels = await response.json();
+          const uniqueGroups = new Set(channels.map((item) => item.group));
+          channelCountEl.textContent = channels.length;
+          groupCountEl.textContent = uniqueGroups.size;
+          channelTotalLabel.textContent =
+            channels.length === 1 ? "1 channel loaded" : `${channels.length} channels loaded`;
+          renderChannelTable(channels);
+          lastSyncEl.textContent = formatTime(new Date());
+          setBanner("Dashboard is up to date.", "ok");
+        } catch (error) {
+          console.error(error);
+          setBanner(error.message, "error");
+        }
+      }
+
+      async function refreshHealth() {
+        try {
+          const response = await fetch("/health");
+          if (!response.ok) {
+            throw new Error(`Health check failed (${response.status})`);
+          }
+          const payload = await response.json();
+          uptimeEl.textContent = formatDuration(payload.uptime_seconds);
+          if (typeof payload.heartbeat_seconds === "number") {
+            heartbeatEl.textContent = `${payload.heartbeat_seconds}s`;
+          }
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      function appendLog(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        log.textContent += `[${timestamp}] ${message}\n`;
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function setSocketStatus(state, label) {
+        socketStatusDot.className = `status-dot ${state}`;
+        socketStatusText.textContent = label;
+        sendButton.disabled = state !== "connected";
+      }
+
+      function connectSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const socketUrl = `${protocol}://${window.location.host}/ws`;
+
+        appendLog(`Connecting to ${socketUrl}`);
+        setSocketStatus("connecting", "Connecting…");
+
+        const ws = new WebSocket(socketUrl);
+
+        ws.addEventListener("open", () => {
+          appendLog("WebSocket connection established.");
+          setSocketStatus("connected", "Connected");
+        });
+
+        ws.addEventListener("message", (event) => {
+          appendLog(`Received: ${event.data}`);
+        });
+
+        ws.addEventListener("close", (event) => {
+          appendLog(`Connection closed (${event.code}). Reconnecting…`);
+          setSocketStatus("disconnected", "Disconnected – retrying");
+          setTimeout(connectSocket, 1500);
+        });
+
+        ws.addEventListener("error", (event) => {
+          console.error("WebSocket error:", event);
+          appendLog("Connection error encountered.");
+          setSocketStatus("error", "Error – check console");
+        });
+
+        form.onsubmit = (evt) => {
+          evt.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(input.value);
+            appendLog(`Sent: ${input.value}`);
+            input.value = "";
+          } else {
+            appendLog("Cannot send message: socket not open.");
+          }
+        };
+      }
+
+      function startAutoRefresh() {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+        }
+        refreshTimer = setInterval(() => {
+          refreshChannels();
+          refreshHealth();
+        }, REFRESH_INTERVAL_MS);
+      }
+
+      async function bootstrap() {
+        await Promise.all([refreshChannels(true), refreshHealth()]);
+        connectSocket();
+        startAutoRefresh();
+      }
+
+      refreshButton.addEventListener("click", () => {
+        refreshChannels(true);
+        refreshHealth();
+      });
+
+      bootstrap();
+    </script>
+  </body>
+</html>
