@@ -16,7 +16,7 @@
         color: #e2e8f0;
         display: flex;
         flex-direction: column;
-        gap: 1.5rem;
+        gap: 1.25rem;
         min-height: 100vh;
       }
       a {
@@ -98,20 +98,103 @@
         color: #38bdf8;
         font-weight: 600;
       }
+      .filter-card {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .filter-card[hidden] {
+        display: none;
+      }
+      .filter-card__header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      .filter-card__header h2 {
+        margin: 0;
+        font-size: 1.15rem;
+      }
+      .filter-card__header p {
+        margin: 0.15rem 0 0;
+        color: rgba(148, 163, 184, 0.8);
+        font-size: 0.9rem;
+      }
+      .filter-card__actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .ghost-button {
+        background: transparent;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        color: #e2e8f0;
+        border-radius: 999px;
+        padding: 0.35rem 0.9rem;
+        cursor: pointer;
+        transition: border-color 0.2s ease-in-out, color 0.2s ease-in-out;
+      }
+      .ghost-button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .ghost-button:not(:disabled):hover {
+        border-color: rgba(148, 163, 184, 0.7);
+        color: #bae6fd;
+      }
+      .filter-card__summary {
+        color: rgba(148, 163, 184, 0.85);
+        font-size: 0.9rem;
+      }
+      .filter-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+      }
+      .filter-chip {
+        border: none;
+        border-radius: 999px;
+        padding: 0.45rem 0.85rem;
+        background: rgba(15, 118, 110, 0.25);
+        color: #5eead4;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s ease-in-out, transform 0.2s ease-in-out;
+      }
+      .filter-chip.active {
+        background: rgba(14, 165, 233, 0.4);
+        color: #e0f2fe;
+        box-shadow: 0 5px 18px rgba(14, 165, 233, 0.25);
+      }
+      .filter-chip:focus-visible {
+        outline: 2px solid rgba(96, 165, 250, 0.6);
+        outline-offset: 2px;
+      }
+      .filter-card__hint {
+        margin: 0;
+        font-size: 0.85rem;
+        color: rgba(148, 163, 184, 0.7);
+      }
       .stream-grid {
         display: grid;
-        gap: 1.25rem;
-        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 0.75rem;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        overflow-y: auto;
+        max-height: calc(100vh - 320px);
+        padding-right: 0.25rem;
+        min-height: 280px;
       }
       .stream-card {
         display: flex;
         flex-direction: column;
-        gap: 0.75rem;
-        background: rgba(30, 41, 59, 0.75);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 14px;
-        padding: 1rem;
-        min-height: 400px;
+        gap: 0.6rem;
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 16px;
+        padding: 0.85rem;
+        min-height: auto;
       }
       .stream-card__header {
         display: flex;
@@ -130,16 +213,29 @@
       }
       iframe {
         width: 100%;
-        height: 100%;
-        /* aspect-ratio: 16 / 9; */
+        height: auto;
+        aspect-ratio: 9 / 16;
         border: none;
-        border-radius: 12px;
+        border-radius: 18px;
         background: #020617;
+        box-shadow: 0 12px 35px rgba(2, 6, 23, 0.45);
       }
       .empty-state {
         margin: 0;
         font-size: 0.95rem;
         color: rgba(148, 163, 184, 0.85);
+      }
+      @media (max-width: 600px) {
+        iframe {
+          aspect-ratio: 9 / 18;
+        }
+      }
+      @media (max-width: 800px) {
+        .stream-grid {
+          max-height: none;
+          overflow: visible;
+          padding-right: 0;
+        }
       }
     </style>
     <script defer="defer" src="/public/js/bundle.js"></script>
@@ -164,6 +260,25 @@
       </div>
     </section>
 
+    <section id="group-filter-card" class="card filter-card" hidden>
+      <div class="filter-card__header">
+        <div>
+          <h2>Group filter</h2>
+          <p>Focus multiview on specific channel groups.</p>
+        </div>
+        <div class="filter-card__actions">
+          <button id="reset-group-filter" class="ghost-button" type="button" disabled>
+            Show all groups
+          </button>
+          <span id="group-filter-summary" class="filter-card__summary">Showing all groups</span>
+        </div>
+      </div>
+      <div id="group-filter-chips" class="filter-chip-row"></div>
+      <p class="filter-card__hint">
+        Tip: Share a filtered view with <code>?groups=g1,g2,gx</code>.
+      </p>
+    </section>
+
     <main id="stream-grid" class="stream-grid"></main>
     <p id="empty-state" class="empty-state">Waiting for channel snapshots…</p>
 
@@ -178,8 +293,21 @@
       const streamGrid = document.getElementById("stream-grid");
       const streamCount = document.getElementById("stream-count");
       const emptyState = document.getElementById("empty-state");
+      const groupFilterCard = document.getElementById("group-filter-card");
+      const groupFilterChips = document.getElementById("group-filter-chips");
+      const groupFilterSummary = document.getElementById("group-filter-summary");
+      const resetGroupFilterButton = document.getElementById("reset-group-filter");
 
       let shouldFetchChannelsOnConnect = true;
+      const DEFAULT_GROUP_FILTERS = ["g1", "g2", "gx"];
+      const activeGroupFilters = new Set();
+      let shouldAttemptDefaultGroups = true;
+      let latestOverview = null;
+
+      initializeGroupFiltersFromQuery();
+      if (resetGroupFilterButton) {
+        resetGroupFilterButton.addEventListener("click", handleResetGroupFilters);
+      }
 
       function setStatus(state, text) {
         statusDot.classList.remove("connected", "disconnected", "error");
@@ -216,40 +344,80 @@
         )}&player=webcodecs&ws=${encodedWs}`;
       }
 
-      function renderStreams(overview) {
-        const controllers = Array.isArray(overview?.controllers)
-          ? overview.controllers
-          : [];
+      function normalizeGroupName(value) {
+        if (typeof value !== "string") {
+          return null;
+        }
+        const trimmed = value.trim();
+        if (trimmed === "") {
+          return null;
+        }
+        return trimmed.toLowerCase();
+      }
 
-        const cards = [];
-        controllers.forEach((controller) => {
-          if (!Array.isArray(controller.channels)) {
-            return;
+      function displayGroupLabel(value) {
+        if (typeof value !== "string" || value.trim() === "") {
+          return "Ungrouped";
+        }
+        return value.trim();
+      }
+
+      function extractGroupsFromParams(params) {
+        const collected = [];
+        params.getAll("group").forEach((value) => {
+          const normalized = normalizeGroupName(value);
+          if (normalized) {
+            collected.push(normalized);
           }
-          controller.channels.forEach((channel) => {
-            const streamUrl = buildStreamUrl(channel?.name);
-            if (!streamUrl) {
-              return;
-            }
-            cards.push({
-              controller,
-              channel,
-              streamUrl,
-            });
-          });
         });
+        const combined = params.get("groups");
+        if (typeof combined === "string" && combined.trim() !== "") {
+          combined.split(",").forEach((value) => {
+            const normalized = normalizeGroupName(value);
+            if (normalized) {
+              collected.push(normalized);
+            }
+          });
+        }
+        return Array.from(new Set(collected));
+      }
+
+      function initializeGroupFiltersFromQuery() {
+        const params = new URLSearchParams(window.location.search);
+        const fromQuery = extractGroupsFromParams(params);
+        if (fromQuery.length === 0) {
+          return;
+        }
+        fromQuery.forEach((group) => activeGroupFilters.add(group));
+        shouldAttemptDefaultGroups = false;
+      }
+
+      function renderStreams(overview) {
+        latestOverview = overview;
+        const cards = collectRenderableCards(overview);
+        const groupStats = deriveGroupStats(cards);
+        ensureDefaultGroupFilters(groupStats);
+        renderGroupFilterChips(groupStats);
+        const visibleCards = filterCardsByGroup(cards);
 
         streamGrid.innerHTML = "";
-        if (cards.length === 0) {
+        if (visibleCards.length === 0) {
           streamCount.textContent = "0";
           emptyState.style.display = "block";
+          if (cards.length === 0) {
+            emptyState.textContent = "Waiting for channel snapshots…";
+          } else if (activeGroupFilters.size > 0) {
+            emptyState.textContent = "No streams match the selected groups.";
+          } else {
+            emptyState.textContent = "Waiting for channel snapshots…";
+          }
           return;
         }
 
         emptyState.style.display = "none";
-        streamCount.textContent = String(cards.length);
+        streamCount.textContent = String(visibleCards.length);
 
-        cards.forEach(({ controller, channel, streamUrl }) => {
+        visibleCards.forEach(({ controller, channel, streamUrl }) => {
           const card = document.createElement("article");
           card.className = "stream-card";
 
@@ -281,6 +449,205 @@
 
           streamGrid.appendChild(card);
         });
+      }
+
+      function collectRenderableCards(overview) {
+        const merged = Array.isArray(overview?.merged_channels) ? overview.merged_channels : [];
+        if (merged.length > 0) {
+          return merged
+            .map((entry) => {
+              const channel = entry?.channel;
+              const streamUrl = buildStreamUrl(channel?.name);
+              if (!streamUrl) {
+                return null;
+              }
+              return {
+                controller: { udid: entry?.controller_udid || "unknown controller" },
+                channel,
+                streamUrl,
+              };
+            })
+            .filter(Boolean);
+        }
+
+        const controllers = Array.isArray(overview?.controllers)
+          ? overview.controllers
+          : [];
+
+        const cards = [];
+        controllers.forEach((controller) => {
+          if (!Array.isArray(controller.channels)) {
+            return;
+          }
+          controller.channels.forEach((channel) => {
+            const streamUrl = buildStreamUrl(channel?.name);
+            if (!streamUrl) {
+              return;
+            }
+            cards.push({
+              controller,
+              channel,
+              streamUrl,
+            });
+          });
+        });
+
+        return cards;
+      }
+
+      function deriveGroupStats(cards) {
+        if (!Array.isArray(cards) || cards.length === 0) {
+          return [];
+        }
+        const statsMap = new Map();
+        cards.forEach(({ channel }) => {
+          const normalized = normalizeGroupName(channel?.group) || "ungrouped";
+          if (!statsMap.has(normalized)) {
+            statsMap.set(normalized, {
+              normalized,
+              label: displayGroupLabel(channel?.group),
+              count: 0,
+            });
+          }
+          statsMap.get(normalized).count += 1;
+        });
+
+        const prioritized = [];
+        DEFAULT_GROUP_FILTERS.forEach((target) => {
+          if (statsMap.has(target)) {
+            prioritized.push(statsMap.get(target));
+            statsMap.delete(target);
+          }
+        });
+        const remaining = Array.from(statsMap.values()).sort((a, b) =>
+          a.label.localeCompare(b.label)
+        );
+        return prioritized.concat(remaining);
+      }
+
+      function ensureDefaultGroupFilters(groupStats) {
+        if (!shouldAttemptDefaultGroups || activeGroupFilters.size > 0) {
+          return;
+        }
+        const defaults = DEFAULT_GROUP_FILTERS.filter((group) =>
+          groupStats.some((stat) => stat.normalized === group)
+        );
+        if (defaults.length === 0) {
+          return;
+        }
+        defaults.forEach((group) => activeGroupFilters.add(group));
+        shouldAttemptDefaultGroups = false;
+      }
+
+      function renderGroupFilterChips(groupStats) {
+        if (!groupFilterCard || !groupFilterChips || !groupFilterSummary) {
+          return;
+        }
+        if (!Array.isArray(groupStats) || groupStats.length === 0) {
+          groupFilterCard.hidden = true;
+          groupFilterChips.innerHTML = "";
+          groupFilterSummary.textContent = "Channel groups will appear once snapshots arrive.";
+          if (resetGroupFilterButton) {
+            resetGroupFilterButton.disabled = true;
+          }
+          return;
+        }
+
+        groupFilterCard.hidden = false;
+        groupFilterChips.innerHTML = "";
+
+        groupStats.forEach((group) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "filter-chip";
+          if (activeGroupFilters.has(group.normalized)) {
+            chip.classList.add("active");
+          }
+          chip.textContent = `${group.label} (${group.count})`;
+          chip.addEventListener("click", () => toggleGroupFilter(group.normalized));
+          groupFilterChips.appendChild(chip);
+        });
+
+        if (resetGroupFilterButton) {
+          resetGroupFilterButton.disabled = activeGroupFilters.size === 0;
+        }
+        groupFilterSummary.textContent = buildGroupFilterSummary(groupStats);
+      }
+
+      function buildGroupFilterSummary(groupStats) {
+        if (activeGroupFilters.size === 0) {
+          return "Showing all groups";
+        }
+        const selected = groupStats
+          .filter((group) => activeGroupFilters.has(group.normalized))
+          .map((group) => group.label);
+        if (selected.length === 0) {
+          return "Filtering by custom groups";
+        }
+        if (selected.length === 1) {
+          return `Showing ${selected[0]}`;
+        }
+        if (selected.length === 2) {
+          return `Showing ${selected.join(" and ")}`;
+        }
+        const [first, second, ...rest] = selected;
+        if (rest.length === 0) {
+          return `Showing ${first}, ${second}`;
+        }
+        return `Showing ${first}, ${second} + ${rest.length} more`;
+      }
+
+      function filterCardsByGroup(cards) {
+        if (activeGroupFilters.size === 0) {
+          return cards;
+        }
+        return cards.filter(({ channel }) => {
+          const normalized = normalizeGroupName(channel?.group) || "ungrouped";
+          return activeGroupFilters.has(normalized);
+        });
+      }
+
+      function toggleGroupFilter(groupKey) {
+        if (!groupKey) {
+          return;
+        }
+        if (activeGroupFilters.has(groupKey)) {
+          activeGroupFilters.delete(groupKey);
+        } else {
+          activeGroupFilters.add(groupKey);
+        }
+        shouldAttemptDefaultGroups = false;
+        syncGroupFiltersToQuery();
+        rerenderCachedStreams();
+      }
+
+      function handleResetGroupFilters() {
+        if (activeGroupFilters.size === 0) {
+          return;
+        }
+        activeGroupFilters.clear();
+        shouldAttemptDefaultGroups = false;
+        syncGroupFiltersToQuery();
+        rerenderCachedStreams();
+      }
+
+      function rerenderCachedStreams() {
+        if (!latestOverview) {
+          return;
+        }
+        renderStreams(latestOverview);
+      }
+
+      function syncGroupFiltersToQuery() {
+        const params = new URLSearchParams(window.location.search);
+        params.delete("group");
+        params.delete("groups");
+        if (activeGroupFilters.size > 0) {
+          params.set("groups", Array.from(activeGroupFilters).join(","));
+        }
+        const query = params.toString();
+        const targetUrl = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+        window.history.replaceState({}, "", targetUrl);
       }
 
       function handleStructuredMessage(raw) {

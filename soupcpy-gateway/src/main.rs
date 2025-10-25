@@ -68,6 +68,7 @@ struct IncomingChannelsSnapshot {
 struct ChannelsOverview {
     total_channels: usize,
     controllers: Vec<ControllerChannels>,
+    merged_channels: Vec<MergedChannel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +77,12 @@ struct ControllerChannels {
     count: usize,
     last_updated_epoch: u64,
     channels: Vec<ChannelDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MergedChannel {
+    controller_udid: String,
+    channel: ChannelDescriptor,
 }
 
 #[derive(Serialize)]
@@ -218,6 +225,7 @@ impl ChannelStore {
         let map = self.channels.read().await;
         let mut controllers = Vec::with_capacity(map.len());
         let mut total_channels = 0;
+        let mut merged_channels = Vec::new();
 
         for (name, channels) in map.iter() {
             total_channels += channels.len();
@@ -228,13 +236,28 @@ impl ChannelStore {
                 last_updated_epoch: 0,
                 channels: channels.clone(),
             });
+            for channel in channels {
+                merged_channels.push(MergedChannel {
+                    controller_udid: name.clone(),
+                    channel: channel.clone(),
+                });
+            }
         }
 
         controllers.sort_by(|a, b| a.udid.cmp(&b.udid));
+        merged_channels.sort_by(|a, b| {
+            let group_a = a.channel.group.as_deref().unwrap_or_default();
+            let group_b = b.channel.group.as_deref().unwrap_or_default();
+            match group_a.cmp(group_b) {
+                std::cmp::Ordering::Equal => a.channel.name.cmp(&b.channel.name),
+                other => other,
+            }
+        });
 
         ChannelsOverview {
             total_channels,
             controllers,
+            merged_channels,
         }
     }
 }
