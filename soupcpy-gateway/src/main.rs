@@ -1,4 +1,13 @@
-use std::{collections::HashMap, env, fmt, fs, io::ErrorKind, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    env, fmt, fs,
+    io::ErrorKind,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use axum::{
     extract::{
@@ -12,12 +21,22 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
-    sync::{broadcast, broadcast::error::RecvError, mpsc, RwLock},
+    sync::{broadcast, broadcast::error::RecvError, mpsc, Notify, RwLock},
 };
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
 type ClientTx = mpsc::UnboundedSender<Message>;
+
+/// Registry entry for one live socket. `session_id` lets a session prove it
+/// still owns the slot before removing it, so a session that was replaced
+/// cannot evict the connection that replaced it.
+#[derive(Clone)]
+struct ClientHandle {
+    session_id: u64,
+    tx: ClientTx,
+    shutdown: Arc<Notify>,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -26,13 +45,22 @@ struct AppState {
     connections: ConnectionRegistry,
     channels: ChannelStore,
     settings: AppSettings,
+    session_counter: Arc<AtomicU64>,
+}
+
+impl AppState {
+    /// Monotonic id identifying one socket for the lifetime of the process.
+    fn next_session_id(&self) -> u64 {
+        self.session_counter.fetch_add(1, Ordering::Relaxed)
+    }
 }
 
 #[derive(Clone, Default)]
 struct ConnectionRegistry {
-    receivers: Arc<RwLock<HashMap<String, ClientTx>>>,
-    controllers: Arc<RwLock<HashMap<String, ClientTx>>>,
-    publishers: Arc<RwLock<HashMap<String, ClientTx>>>,
+    receivers: Arc<RwLock<HashMap<String, ClientHandle>>>,
+    controllers: Arc<RwLock<HashMap<String, ClientHandle>>>,
+    publishers: Arc<RwLock<HashMap<String, ClientHandle>>>,
+    dashboards: Arc<RwLock<HashMap<String, ClientHandle>>>,
 }
 
 #[derive(Clone, Default)]
@@ -267,6 +295,8 @@ enum EndpointKind {
     Receiver,
     Controller,
     Publisher,
+    /// Browser dashboard: observes the log/snapshot broadcast and routes nowhere.
+    Dashboard,
 }
 
 impl EndpointKind {
@@ -275,6 +305,7 @@ impl EndpointKind {
             EndpointKind::Receiver => "receiver",
             EndpointKind::Controller => "controller",
             EndpointKind::Publisher => "publisher",
+            EndpointKind::Dashboard => "dashboard",
         }
     }
 }
@@ -286,40 +317,57 @@ impl fmt::Display for EndpointKind {
 }
 
 impl ConnectionRegistry {
-    async fn insert(&self, kind: EndpointKind, udid: String, tx: ClientTx) -> Option<ClientTx> {
-        self.map(kind).write().await.insert(udid, tx)
+    async fn insert(
+        &self,
+        kind: EndpointKind,
+        udid: String,
+        handle: ClientHandle,
+    ) -> Option<ClientHandle> {
+        self.map(kind).write().await.insert(udid, handle)
     }
 
-    async fn remove(&self, kind: EndpointKind, udid: &str) -> Option<ClientTx> {
-        self.map(kind).write().await.remove(udid)
+    /// Remove `udid` only while it is still held by `session_id`, returning
+    /// whether this session owned the slot. A session that was already replaced
+    /// gets `false` and leaves the newer connection registered.
+    async fn remove_if_current(&self, kind: EndpointKind, udid: &str, session_id: u64) -> bool {
+        let mut map = self.map(kind).write().await;
+        match map.get(udid) {
+            Some(handle) if handle.session_id == session_id => {
+                map.remove(udid);
+                true
+            }
+            _ => false,
+        }
     }
 
     async fn send_text(&self, kind: EndpointKind, udid: &str, payload: &str) {
         let map = self.map(kind).read().await;
-        if let Some(tx) = map.get(udid) {
+        if let Some(handle) = map.get(udid) {
             info!("send_text {kind} {udid} {payload}");
-            let _ = tx.send(Message::Text(payload.to_owned()));
+            let _ = handle.tx.send(Message::Text(payload.to_owned()));
         }
     }
 
     async fn send_binary(&self, kind: EndpointKind, udid: &str, payload: Vec<u8>) {
         let map = self.map(kind).read().await;
-        if let Some(tx) = map.get(udid) {
-            let _ = tx.send(Message::Binary(payload.into()));
-        }
-    }
-    async fn broadcast_text(&self, kind: EndpointKind, payload: &str) {
-        let map = self.map(kind).read().await;
-        for tx in map.values() {
-            let _ = tx.send(Message::Text(payload.to_owned()));
+        if let Some(handle) = map.get(udid) {
+            let _ = handle.tx.send(Message::Binary(payload));
         }
     }
 
-    fn map(&self, kind: EndpointKind) -> &Arc<RwLock<HashMap<String, ClientTx>>> {
+    async fn broadcast_text(&self, kind: EndpointKind, payload: &str) {
+        let map = self.map(kind).read().await;
+        for handle in map.values() {
+            let _ = handle.tx.send(Message::Text(payload.to_owned()));
+        }
+    }
+
+    fn map(&self, kind: EndpointKind) -> &Arc<RwLock<HashMap<String, ClientHandle>>> {
         match kind {
             EndpointKind::Receiver => &self.receivers,
             EndpointKind::Controller => &self.controllers,
             EndpointKind::Publisher => &self.publishers,
+            EndpointKind::Dashboard => &self.dashboards,
         }
     }
 }
@@ -365,6 +413,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         connections: ConnectionRegistry::default(),
         channels: ChannelStore::default(),
         settings: settings.clone(),
+        session_counter: Arc::new(AtomicU64::new(1)),
     };
 
     let static_assets = get_service(ServeDir::new("public"));
@@ -377,6 +426,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/ws", get(ws_receiver_handler))
         .route("/ws/publisher", get(ws_publisher_handler))
         .route("/ws/controller", get(ws_controller_handler))
+        .route("/ws/dashboard", get(ws_dashboard_handler))
         .route("/api/settings", get(runtime_settings))
         .route("/api/channels", get(list_channels))
         .nest_service("/public", static_assets)
@@ -440,8 +490,9 @@ async fn ws_receiver_handler(
     State(state): State<AppState>,
     Query(query): Query<EndpointQuery>,
 ) -> impl IntoResponse {
-    let udid = query.udid.unwrap_or_else(|| "default".to_owned());
-    upgrade_endpoint(ws, state, udid, EndpointKind::Receiver)
+    let session_id = state.next_session_id();
+    let udid = routed_udid(query, EndpointKind::Receiver);
+    upgrade_endpoint(ws, state, udid, EndpointKind::Receiver, session_id)
 }
 
 async fn ws_publisher_handler(
@@ -449,8 +500,9 @@ async fn ws_publisher_handler(
     State(state): State<AppState>,
     Query(query): Query<EndpointQuery>,
 ) -> impl IntoResponse {
-    let udid = query.udid.unwrap_or_else(|| "default".to_owned());
-    upgrade_endpoint(ws, state, udid, EndpointKind::Publisher)
+    let session_id = state.next_session_id();
+    let udid = routed_udid(query, EndpointKind::Publisher);
+    upgrade_endpoint(ws, state, udid, EndpointKind::Publisher, session_id)
 }
 
 async fn ws_controller_handler(
@@ -458,8 +510,34 @@ async fn ws_controller_handler(
     State(state): State<AppState>,
     Query(query): Query<EndpointQuery>,
 ) -> impl IntoResponse {
-    let udid = query.udid.unwrap_or_else(|| "default".to_owned());
-    upgrade_endpoint(ws, state, udid, EndpointKind::Controller)
+    let session_id = state.next_session_id();
+    let udid = routed_udid(query, EndpointKind::Controller);
+    upgrade_endpoint(ws, state, udid, EndpointKind::Controller, session_id)
+}
+
+async fn ws_dashboard_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<EndpointQuery>,
+) -> impl IntoResponse {
+    let session_id = state.next_session_id();
+    // Dashboards observe rather than route, so each socket gets its own key:
+    // several open tabs must not evict one another, and they must not land in
+    // the receiver namespace where a real stream could share the slot.
+    let udid = query
+        .udid
+        .unwrap_or_else(|| format!("dashboard-{session_id}"));
+    upgrade_endpoint(ws, state, udid, EndpointKind::Dashboard, session_id)
+}
+
+/// Routing key for an endpoint that is addressed by udid. A missing `udid`
+/// still falls back to "default" for compatibility, but it is a misconfigured
+/// client and worth saying so in the log.
+fn routed_udid(query: EndpointQuery, kind: EndpointKind) -> String {
+    query.udid.unwrap_or_else(|| {
+        warn!("{kind} connected without a udid; routing it as 'default'");
+        "default".to_owned()
+    })
 }
 
 fn upgrade_endpoint(
@@ -467,12 +545,13 @@ fn upgrade_endpoint(
     state: AppState,
     udid: String,
     kind: EndpointKind,
+    session_id: u64,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
         let state = state.clone();
         let udid = udid.clone();
         async move {
-            if let Err(err) = websocket_session(socket, kind, udid, state).await {
+            if let Err(err) = websocket_session(socket, kind, udid, session_id, state).await {
                 warn!("{kind} session ended with error: {err}");
             }
         }
@@ -483,50 +562,65 @@ async fn websocket_session(
     mut socket: WebSocket,
     kind: EndpointKind,
     udid: String,
+    session_id: u64,
     state: AppState,
 ) -> Result<(), axum::Error> {
     let label = kind.label();
     let connections = state.connections.clone();
-    let mut broadcast_rx = state.broadcaster.subscribe();
+    // Only dashboards tail the log/snapshot broadcast. Receiver and publisher
+    // sockets carry the scrcpy protocol, and injecting log text into them
+    // corrupts the stream.
+    let mut broadcast_rx =
+        matches!(kind, EndpointKind::Dashboard).then(|| state.broadcaster.subscribe());
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
+    let shutdown = Arc::new(Notify::new());
 
     if let Some(previous) = connections
-        .insert(kind, udid.clone(), outbound_tx.clone())
+        .insert(
+            kind,
+            udid.clone(),
+            ClientHandle {
+                session_id,
+                tx: outbound_tx.clone(),
+                shutdown: shutdown.clone(),
+            },
+        )
         .await
     {
         warn!("replaced existing {label} connection for udid '{udid}', closing prior socket");
-        let _ = previous.send(Message::Close(None));
+        previous.shutdown.notify_one();
     }
 
     info!("{label} connected: {udid}");
 
-    match kind {
-        EndpointKind::Receiver => {
-            // &udid can be name
-            let s = state.channels.find_channel(&udid).await;
-            if let Some(channel) = s {
-                let gateway = channel.gw.unwrap_or(0);
-                info!("sending connect to controller {gateway} for channel {udid}");
+    if let EndpointKind::Receiver = kind {
+        // &udid can be name
+        let s = state.channels.find_channel(&udid).await;
+        if let Some(channel) = s {
+            let gateway = channel.gw.unwrap_or(0);
+            info!("sending connect to controller {gateway} for channel {udid}");
 
-                connections
-                    .send_text(
-                        EndpointKind::Controller,
-                        gateway.to_string().as_str(),
-                        format!(
-                            "connect publisher_udid={} udid={}",
-                            channel.name, channel.udid
-                        )
-                        .as_str(),
+            connections
+                .send_text(
+                    EndpointKind::Controller,
+                    gateway.to_string().as_str(),
+                    format!(
+                        "connect publisher_udid={} udid={}",
+                        channel.name, channel.udid
                     )
-                    .await;
-            }
+                    .as_str(),
+                )
+                .await;
         }
-        EndpointKind::Controller => {}
-        EndpointKind::Publisher => {}
     }
 
     loop {
         tokio::select! {
+            _ = shutdown.notified() => {
+                info!("{label} {udid} superseded by a newer connection, closing");
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             Some(message) = outbound_rx.recv() => {
                 if let Err(err) = socket.send(message).await {
                     warn!("error sending to {label} {udid}: {err}");
@@ -589,6 +683,9 @@ async fn websocket_session(
                                 .send_binary(EndpointKind::Receiver, &udid, data)
                                 .await;
                             }
+                            EndpointKind::Dashboard => {
+                                // Dashboards never carry stream payloads.
+                            }
                         }
 
 
@@ -614,7 +711,13 @@ async fn websocket_session(
                     None => break,
                 }
             }
-            broadcast_msg = broadcast_rx.recv() => {
+            broadcast_msg = async {
+                match broadcast_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    // Not a dashboard: this arm must never become ready.
+                    None => std::future::pending().await,
+                }
+            } => {
                 match broadcast_msg {
                     Ok(msg) => {
                         if let Err(err) = socket.send(Message::Text(msg)).await {
@@ -631,11 +734,14 @@ async fn websocket_session(
         }
     }
 
-    connections.remove(kind, &udid).await;
+    let was_current = connections.remove_if_current(kind, &udid, session_id).await;
     info!("{label} disconnected: {udid}");
 
-    match kind {
-        EndpointKind::Receiver => {
+    // Only the session still holding the slot announces the disconnect. A
+    // superseded session's replacement is live, so tearing down the publisher
+    // here would kill the stream that just reconnected.
+    if was_current {
+        if let EndpointKind::Receiver = kind {
             // &udid can be name
             let s = state.channels.find_channel(&udid).await;
             if let Some(channel) = s {
@@ -654,16 +760,6 @@ async fn websocket_session(
                     )
                     .await;
             }
-        }
-        EndpointKind::Controller => {
-            // connections
-            // .send_text(EndpointKind::Receiver, &udid, "Welcome to the controller!")
-            // .await;
-        }
-        EndpointKind::Publisher => {
-            // connections
-            // .send_text(EndpointKind::Controller, &udid, "Welcome to the publisher!")
-            // .await;
         }
     }
 
@@ -695,6 +791,10 @@ async fn forward_direct(
                 .broadcast_text(EndpointKind::Receiver, payload)
                 .await;
         }
+        EndpointKind::Dashboard => {
+            // The dashboard is a monitor: whatever it sends is already echoed
+            // back through the log broadcast, so it routes nowhere.
+        }
     }
 }
 
@@ -725,4 +825,153 @@ async fn shutdown_signal() {
     }
 
     info!("shutdown signal received, draining connections");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle(session_id: u64) -> (ClientHandle, mpsc::UnboundedReceiver<Message>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            ClientHandle {
+                session_id,
+                tx,
+                shutdown: Arc::new(Notify::new()),
+            },
+            rx,
+        )
+    }
+
+    fn expect_text(message: Message) -> String {
+        match message {
+            Message::Text(text) => text,
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_if_current_releases_the_owning_session() {
+        let registry = ConnectionRegistry::default();
+        let (only, _rx) = handle(7);
+        registry
+            .insert(EndpointKind::Receiver, "dev-1".to_owned(), only)
+            .await;
+
+        assert!(
+            registry
+                .remove_if_current(EndpointKind::Receiver, "dev-1", 7)
+                .await
+        );
+        assert!(registry.map(EndpointKind::Receiver).read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn superseded_session_cannot_evict_its_replacement() {
+        let registry = ConnectionRegistry::default();
+        let (first, _first_rx) = handle(1);
+        let (second, mut second_rx) = handle(2);
+
+        registry
+            .insert(EndpointKind::Receiver, "dev-1".to_owned(), first)
+            .await;
+        let previous = registry
+            .insert(EndpointKind::Receiver, "dev-1".to_owned(), second)
+            .await;
+        assert!(
+            previous.is_some(),
+            "the second insert should displace the first"
+        );
+
+        // The stale session tears down after its replacement registered.
+        assert!(
+            !registry
+                .remove_if_current(EndpointKind::Receiver, "dev-1", 1)
+                .await,
+            "a stale session must not report ownership"
+        );
+
+        // The replacement has to stay routable.
+        registry
+            .send_text(EndpointKind::Receiver, "dev-1", "still here")
+            .await;
+        let delivered = second_rx
+            .try_recv()
+            .expect("replacement should be reachable");
+        assert_eq!(expect_text(delivered), "still here");
+    }
+
+    #[tokio::test]
+    async fn replaced_session_is_told_to_shut_down() {
+        let registry = ConnectionRegistry::default();
+        let (first, _first_rx) = handle(1);
+        let (second, _second_rx) = handle(2);
+
+        registry
+            .insert(EndpointKind::Controller, "gw-1".to_owned(), first)
+            .await;
+        let previous = registry
+            .insert(EndpointKind::Controller, "gw-1".to_owned(), second)
+            .await
+            .expect("previous handle");
+
+        // `notify_one` leaves a permit, so the old session wakes even if it is
+        // not parked on `notified()` yet.
+        previous.shutdown.notify_one();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                previous.shutdown.notified(),
+            )
+            .await
+            .is_ok(),
+            "the replaced session should observe the shutdown signal"
+        );
+    }
+
+    #[tokio::test]
+    async fn receiver_traffic_never_reaches_a_dashboard() {
+        let registry = ConnectionRegistry::default();
+        let (dash, mut dash_rx) = handle(1);
+        registry
+            .insert(EndpointKind::Dashboard, "dashboard-1".to_owned(), dash)
+            .await;
+
+        registry
+            .broadcast_text(EndpointKind::Receiver, "stream chatter")
+            .await;
+
+        assert!(
+            dash_rx.try_recv().is_err(),
+            "dashboards sit in their own namespace"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboards_with_distinct_ids_coexist() {
+        let registry = ConnectionRegistry::default();
+        let (first, mut first_rx) = handle(1);
+        let (second, mut second_rx) = handle(2);
+
+        // Mirrors two open browser tabs, each keyed by its own session id.
+        registry
+            .insert(EndpointKind::Dashboard, "dashboard-1".to_owned(), first)
+            .await;
+        registry
+            .insert(EndpointKind::Dashboard, "dashboard-2".to_owned(), second)
+            .await;
+
+        registry
+            .broadcast_text(EndpointKind::Dashboard, "log line")
+            .await;
+
+        assert_eq!(
+            expect_text(first_rx.try_recv().expect("first tab")),
+            "log line"
+        );
+        assert_eq!(
+            expect_text(second_rx.try_recv().expect("second tab")),
+            "log line"
+        );
+    }
 }

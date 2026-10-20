@@ -496,7 +496,7 @@
 
       function connectSocket() {
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const socketUrl = `${protocol}://${window.location.host}/ws`;
+        const socketUrl = `${protocol}://${window.location.host}/ws/dashboard`;
 
         appendLog(`Connecting to ${socketUrl}`);
         setStatus("connecting", "Connecting…");

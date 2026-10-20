@@ -8,7 +8,7 @@ axum = { version = "0.7", features = ["ws"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-tokio = { version = "1.37", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.37", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tower-http = { version = "0.5", features = ["fs"] }
