@@ -1,0 +1,48 @@
+# The agent-facing endpoints, separated so they can be locked down.
+#
+# /ws/controller and /ws/publisher have NO AUTHENTICATION. Anything that can
+# reach them may register as the controller for any udid and take over routing
+# for that device. Do not publish them to the internet unrestricted.
+#
+# nginx-ingress matches the longest path prefix, so these two rules win over
+# the "/" rule in the main Ingress.
+#
+# Replace the CIDRs below with the addresses your agent machines actually dial
+# from. An empty or wrong list here either locks out every agent or leaves the
+# endpoints open, so treat it as a required edit, not a default.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: soupcpy-gateway-agents
+  labels:
+    app.kubernetes.io/name: soupcpy-gateway
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # REQUIRED EDIT: the offices or VPN ranges your agents connect from.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "203.0.113.0/24"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - gateway.example.com
+      secretName: soupcpy-gateway-tls
+  rules:
+    - host: gateway.example.com
+      http:
+        paths:
+          - path: /ws/controller
+            pathType: Prefix
+            backend:
+              service:
+                name: soupcpy-gateway
+                port:
+                  name: http
+          - path: /ws/publisher
+            pathType: Prefix
+            backend:
+              service:
+                name: soupcpy-gateway
+                port:
+                  name: http

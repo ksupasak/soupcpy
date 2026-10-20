@@ -143,6 +143,64 @@ impl AppSettings {
 
 const DEFAULT_CONFIG_PATH: &str = "config/server.toml";
 
+/// Scheme a browser uses to reach the gateway. Behind a TLS ingress this must
+/// be `https`, or the dashboard builds `ws://` URLs on an `https` page and the
+/// browser blocks them as mixed content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PublicScheme {
+    Http,
+    Https,
+}
+
+impl PublicScheme {
+    const fn http(self) -> &'static str {
+        match self {
+            PublicScheme::Http => "http",
+            PublicScheme::Https => "https",
+        }
+    }
+
+    const fn ws(self) -> &'static str {
+        match self {
+            PublicScheme::Http => "ws",
+            PublicScheme::Https => "wss",
+        }
+    }
+
+    /// Port that is implied by the scheme and so left out of generated URLs.
+    const fn default_port(self) -> u16 {
+        match self {
+            PublicScheme::Http => 80,
+            PublicScheme::Https => 443,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ConfigError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "http" => Ok(PublicScheme::Http),
+            "https" => Ok(PublicScheme::Https),
+            other => Err(ConfigError(format!(
+                "public scheme must be 'http' or 'https', got '{other}'"
+            ))),
+        }
+    }
+}
+
+/// A configuration value that could not be understood. Returned rather than
+/// logged so a typo in a container's environment fails the pod instead of
+/// quietly serving the wrong address.
+#[derive(Debug)]
+struct ConfigError(String);
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ServerConfig {
     #[serde(default = "default_host")]
@@ -153,10 +211,15 @@ struct ServerConfig {
     public_host: Option<String>,
     #[serde(default)]
     public_port: Option<u16>,
+    #[serde(default)]
+    public_scheme: Option<PublicScheme>,
 }
 
 impl ServerConfig {
-    fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    /// Read the TOML file, if there is one. A missing or unreadable file is
+    /// not fatal: container deployments configure everything through the
+    /// environment instead.
+    fn load_file() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let path = env::var("GATEWAY_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_owned());
         match fs::read_to_string(&path) {
             Ok(contents) => {
@@ -176,16 +239,72 @@ impl ServerConfig {
         }
     }
 
+    /// Overlay `GATEWAY_*` environment variables on top of the file. This is
+    /// the path Compose and Kubernetes use, so one image serves every
+    /// environment without baking a config file per deployment.
+    fn apply_env_overrides<F>(&mut self, lookup: F) -> Result<(), ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        fn port(name: &str, raw: &str) -> Result<u16, ConfigError> {
+            raw.trim().parse().map_err(|_| {
+                ConfigError(format!("{name} must be a port number 1-65535, got '{raw}'"))
+            })
+        }
+
+        if let Some(host) = lookup("GATEWAY_HOST") {
+            self.host = host;
+        }
+        if let Some(raw) = lookup("GATEWAY_PORT") {
+            self.port = port("GATEWAY_PORT", &raw)?;
+        }
+        if let Some(host) = lookup("GATEWAY_PUBLIC_HOST") {
+            self.public_host = Some(host);
+        }
+        if let Some(raw) = lookup("GATEWAY_PUBLIC_PORT") {
+            self.public_port = Some(port("GATEWAY_PUBLIC_PORT", &raw)?);
+        }
+        if let Some(raw) = lookup("GATEWAY_PUBLIC_SCHEME") {
+            self.public_scheme = Some(PublicScheme::parse(&raw)?);
+        }
+        Ok(())
+    }
+
     fn bind_target(&self) -> (&str, u16) {
         (self.host.as_str(), self.port)
     }
 
     fn http_base(&self) -> String {
-        format!("http://{}:{}", self.public_host(), self.public_port())
+        match self.public_authority() {
+            Some(authority) => format!("{}://{authority}", self.public_scheme().http()),
+            None => String::new(),
+        }
     }
 
     fn ws_base(&self) -> String {
-        format!("ws://{}:{}", self.public_host(), self.public_port())
+        match self.public_authority() {
+            Some(authority) => format!("{}://{authority}", self.public_scheme().ws()),
+            None => String::new(),
+        }
+    }
+
+    /// `host` or `host:port`, dropping the port when the scheme already
+    /// implies it. Behind an ingress on 443 the generated links need to be
+    /// `https://gateway.example.com`, not `...:443`.
+    ///
+    /// `None` when no public host was configured and we are bound to a
+    /// wildcard address: "0.0.0.0" is not a name a browser can dial, so the
+    /// dashboard is better off falling back to the origin it was loaded from.
+    fn public_authority(&self) -> Option<String> {
+        if self.public_host.is_none() && is_wildcard_host(&self.host) {
+            return None;
+        }
+        let port = self.public_port();
+        Some(if port == self.public_scheme().default_port() {
+            self.public_host().to_owned()
+        } else {
+            format!("{}:{}", self.public_host(), port)
+        })
     }
 
     fn public_host(&self) -> &str {
@@ -194,6 +313,10 @@ impl ServerConfig {
 
     fn public_port(&self) -> u16 {
         self.public_port.unwrap_or(self.port)
+    }
+
+    fn public_scheme(&self) -> PublicScheme {
+        self.public_scheme.unwrap_or(PublicScheme::Http)
     }
 }
 
@@ -204,8 +327,14 @@ impl Default for ServerConfig {
             port: default_port(),
             public_host: None,
             public_port: None,
+            public_scheme: None,
         }
     }
+}
+
+/// Addresses that mean "every interface" rather than a reachable host.
+fn is_wildcard_host(host: &str) -> bool {
+    matches!(host.trim(), "0.0.0.0" | "::" | "[::]" | "*" | "")
 }
 
 const fn default_port() -> u16 {
@@ -391,19 +520,25 @@ const STREAM_HTML: &str = include_str!("../templates/stream.html");
 async fn main() {
     if let Err(err) = run().await {
         eprintln!("server failed: {err}");
+        // Exit non-zero so Docker restart policies and Kubernetes see a
+        // failure rather than a clean shutdown.
+        std::process::exit(1);
     }
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing();
 
-    let config = match ServerConfig::load() {
+    let mut config = match ServerConfig::load_file() {
         Ok(cfg) => cfg,
         Err(err) => {
             warn!("failed to load server config; using defaults: {err}");
             ServerConfig::default()
         }
     };
+    // A malformed GATEWAY_* value is fatal: a crash-looping pod is visible,
+    // whereas silently serving the wrong public address is not.
+    config.apply_env_overrides(|name| env::var(name).ok())?;
     let settings = AppSettings::from_config(&config);
 
     let (tx, _rx) = broadcast::channel(128);
@@ -434,9 +569,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let listener = TcpListener::bind(config.bind_target()).await?;
     let actual_addr = listener.local_addr()?;
+    let public_base = if settings.http_base.is_empty() {
+        "derived from each browser's own origin".to_owned()
+    } else {
+        settings.http_base.clone()
+    };
     info!(
-        "HTTP and WebSocket server listening on http://{actual_addr} (public base {})",
-        settings.http_base
+        "HTTP and WebSocket server listening on http://{actual_addr} (public base {public_base})"
     );
 
     axum::serve(listener, app.into_make_service())
@@ -848,6 +987,148 @@ mod tests {
             Message::Text(text) => text,
             other => panic!("expected a text frame, got {other:?}"),
         }
+    }
+
+    /// Env lookups are injected rather than read from the process so these
+    /// tests stay deterministic under the parallel test runner.
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn a_wildcard_bind_with_no_public_host_advertises_nothing() {
+        // "http://0.0.0.0:3000" is not a link a browser can follow, so the
+        // dashboard should fall back to the origin it was served from.
+        let config = ServerConfig::default();
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.http_base(), "");
+        assert_eq!(config.ws_base(), "");
+    }
+
+    #[test]
+    fn a_concrete_bind_host_is_advertised_with_its_port() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[("GATEWAY_HOST", "127.0.0.1")]))
+            .expect("overrides should apply");
+
+        assert_eq!(config.http_base(), "http://127.0.0.1:3000");
+        assert_eq!(config.ws_base(), "ws://127.0.0.1:3000");
+    }
+
+    #[test]
+    fn an_explicit_public_host_wins_over_a_wildcard_bind() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[("GATEWAY_PUBLIC_HOST", "192.168.1.10")]))
+            .expect("overrides should apply");
+
+        assert_eq!(config.http_base(), "http://192.168.1.10:3000");
+    }
+
+    #[test]
+    fn https_yields_wss_and_omits_the_implied_port() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[
+                ("GATEWAY_PUBLIC_HOST", "gateway.example.com"),
+                ("GATEWAY_PUBLIC_PORT", "443"),
+                ("GATEWAY_PUBLIC_SCHEME", "https"),
+            ]))
+            .expect("overrides should apply");
+
+        assert_eq!(config.http_base(), "https://gateway.example.com");
+        assert_eq!(config.ws_base(), "wss://gateway.example.com");
+    }
+
+    #[test]
+    fn plain_http_on_eighty_also_omits_the_port() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[
+                ("GATEWAY_PUBLIC_HOST", "gateway.internal"),
+                ("GATEWAY_PUBLIC_PORT", "80"),
+            ]))
+            .expect("overrides should apply");
+
+        assert_eq!(config.ws_base(), "ws://gateway.internal");
+    }
+
+    #[test]
+    fn a_non_default_port_is_kept_under_https() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[
+                ("GATEWAY_PUBLIC_HOST", "gateway.example.com"),
+                ("GATEWAY_PUBLIC_PORT", "8443"),
+                ("GATEWAY_PUBLIC_SCHEME", "https"),
+            ]))
+            .expect("overrides should apply");
+
+        assert_eq!(config.ws_base(), "wss://gateway.example.com:8443");
+    }
+
+    #[test]
+    fn bind_target_is_independent_of_the_public_address() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[
+                ("GATEWAY_HOST", "0.0.0.0"),
+                ("GATEWAY_PORT", "3000"),
+                ("GATEWAY_PUBLIC_HOST", "gateway.example.com"),
+                ("GATEWAY_PUBLIC_SCHEME", "https"),
+                ("GATEWAY_PUBLIC_PORT", "443"),
+            ]))
+            .expect("overrides should apply");
+
+        // The pod still listens on the container port; only the links change.
+        assert_eq!(config.bind_target(), ("0.0.0.0", 3000));
+        assert_eq!(config.http_base(), "https://gateway.example.com");
+    }
+
+    #[test]
+    fn a_malformed_port_is_rejected() {
+        let mut config = ServerConfig::default();
+        let err = config
+            .apply_env_overrides(env(&[("GATEWAY_PORT", "not-a-port")]))
+            .expect_err("a malformed port must not be ignored");
+
+        assert!(err.to_string().contains("GATEWAY_PORT"), "got: {err}");
+        // The bad value must not have been partially applied.
+        assert_eq!(config.port, 3000);
+    }
+
+    #[test]
+    fn an_out_of_range_port_is_rejected() {
+        let mut config = ServerConfig::default();
+        assert!(config
+            .apply_env_overrides(env(&[("GATEWAY_PUBLIC_PORT", "70000")]))
+            .is_err());
+    }
+
+    #[test]
+    fn an_unknown_scheme_is_rejected() {
+        let mut config = ServerConfig::default();
+        let err = config
+            .apply_env_overrides(env(&[("GATEWAY_PUBLIC_SCHEME", "ftp")]))
+            .expect_err("only http and https are meaningful here");
+
+        assert!(err.to_string().contains("ftp"), "got: {err}");
+    }
+
+    #[test]
+    fn scheme_parsing_tolerates_case_and_padding() {
+        let mut config = ServerConfig::default();
+        config
+            .apply_env_overrides(env(&[("GATEWAY_PUBLIC_SCHEME", " HTTPS ")]))
+            .expect("case and whitespace should be tolerated");
+
+        assert_eq!(config.public_scheme(), PublicScheme::Https);
     }
 
     #[tokio::test]

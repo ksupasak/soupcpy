@@ -7,3 +7,15 @@ port = 3000
 # public_host = "192.168.1.10"
 # public_port = 3000
 
+# Scheme a browser uses to reach the gateway: "http" (default) or "https".
+# Set this to "https" behind a TLS proxy or ingress -- it is what makes the
+# dashboard emit wss:// URLs, which a browser requires on an https page.
+# public_scheme = "https"
+
+# Every value here can be overridden by environment variables, which is how the
+# Docker Compose and Kubernetes setups configure the gateway:
+#   GATEWAY_HOST  GATEWAY_PORT  GATEWAY_PUBLIC_HOST  GATEWAY_PUBLIC_PORT
+#   GATEWAY_PUBLIC_SCHEME
+# The environment wins over this file. GATEWAY_CONFIG points at an alternate
+# path for this file.
+

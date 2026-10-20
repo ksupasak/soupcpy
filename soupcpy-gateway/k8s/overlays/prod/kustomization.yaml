@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: soupcpy
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - ingress-agents.yaml
+
+images:
+  - name: soupcpy-gateway
+    # Pin a real tag here; :latest gives you no way to roll back.
+    newTag: v0.1.0
+
+configMapGenerator:
+  - name: soupcpy-gateway-config
+    behavior: merge
+    literals:
+      - GATEWAY_PUBLIC_HOST=gateway.example.com
+      - GATEWAY_PUBLIC_PORT=443
+      - GATEWAY_PUBLIC_SCHEME=https
+      - RUST_LOG=info
+
+patches:
+  # TLS, and keep the browser-facing ingress to the dashboard and receiver
+  # paths only. The agent endpoints are carved out into ingress-agents.yaml so
+  # they can be restricted by source address.
+  - target:
+      kind: Ingress
+      name: soupcpy-gateway
+    patch: |
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts:
+              - gateway.example.com
+            secretName: soupcpy-gateway-tls
+      - op: add
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt-prod

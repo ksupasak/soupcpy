@@ -15,15 +15,32 @@ services:
     ports:
       - "${GATEWAY_PORT:-3000}:3000"
     environment:
+      # Bind every interface inside the container; 127.0.0.1 would make the
+      # published port unreachable from the host.
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 3000
+      # What a browser uses to reach the gateway. This only affects the stream
+      # links the dashboard builds (/api/settings). Override GATEWAY_PUBLIC_HOST
+      # with the machine's LAN address when serving anything but this laptop,
+      # and set GATEWAY_PUBLIC_SCHEME=https when terminating TLS in front.
+      GATEWAY_PUBLIC_HOST: ${GATEWAY_PUBLIC_HOST:-localhost}
+      GATEWAY_PUBLIC_PORT: ${GATEWAY_PUBLIC_PORT:-3000}
+      GATEWAY_PUBLIC_SCHEME: ${GATEWAY_PUBLIC_SCHEME:-http}
       RUST_LOG: ${RUST_LOG:-info}
-      GATEWAY_CONFIG: /app/config/server.toml
-    volumes:
-      # Overlays the local-dev config (which binds 127.0.0.1) with one that
-      # binds 0.0.0.0. Edit config/server.docker.toml and restart to change
-      # the public host/port advertised to browsers.
-      - ./config/server.docker.toml:/app/config/server.toml:ro
-      # Uncomment to swap the ws-scrcpy bundle without rebuilding the image.
-      # - ./public:/app/public:ro
+    # The image runs as a non-root user and writes nothing outside /tmp.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Everything above is configured by environment variable, which is how the
+    # Kubernetes manifests do it too. config/server.docker.toml is kept for the
+    # file-based route; mount it and the GATEWAY_* vars still take precedence.
+    # Uncomment to swap the ws-scrcpy bundle without rebuilding the image, or
+    # to go back to a config file:
+    # volumes:
+    #   - ./public:/app/public:ro
+    #   - ./config/server.docker.toml:/app/config/server.toml:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
       interval: 30s

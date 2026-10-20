@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: soupcpy
+    includeSelectors: false
+
+# Generated rather than a static ConfigMap so its content hash is part of the
+# name: editing a value then re-applying actually restarts the pod, instead of
+# leaving it running with the old environment.
+configMapGenerator:
+  - name: soupcpy-gateway-config
+    literals:
+      # Bind all interfaces inside the pod; 127.0.0.1 would be unreachable.
+      - GATEWAY_HOST=0.0.0.0
+      - GATEWAY_PORT=3000
+      # What a browser uses to reach the gateway. These only affect the stream
+      # links the dashboard builds (/api/settings) -- overlays set them to the
+      # real ingress host, and GATEWAY_PUBLIC_SCHEME=https is what makes the
+      # dashboard emit wss:// instead of ws://.
+      - GATEWAY_PUBLIC_HOST=gateway.example.com
+      - GATEWAY_PUBLIC_PORT=443
+      - GATEWAY_PUBLIC_SCHEME=https
+      - RUST_LOG=info

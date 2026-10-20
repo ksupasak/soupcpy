@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: soupcpy-gateway
+  labels:
+    app.kubernetes.io/name: soupcpy-gateway
+  annotations:
+    # WebSocket upgrades work without annotation on ingress-nginx, but the
+    # default 60s proxy timeouts would cut idle streams and the dashboard
+    # socket. These raise them to an hour.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Video frames arrive as binary WebSocket messages; do not buffer them.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    # Overlays replace this host.
+    - host: gateway.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: soupcpy-gateway
+                port:
+                  name: http

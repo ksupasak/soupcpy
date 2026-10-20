@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soupcpy-gateway
+  labels:
+    app.kubernetes.io/name: soupcpy-gateway
+    app.kubernetes.io/component: gateway
+spec:
+  # MUST stay at 1. The gateway keeps every connection in process memory
+  # (ConnectionRegistry, ChannelStore) and pairs receivers with controllers by
+  # udid within a single process. With two replicas a receiver can land on one
+  # pod while its controller sits on another, and the stream silently never
+  # starts. Scaling out needs a shared routing backend first -- see k8s/README.md.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: a rollout that briefly runs two pods splits
+    # the registry for the overlap and drops in-flight streams either way.
+    # Recreate makes the interruption short and deterministic.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: soupcpy-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: soupcpy-gateway
+        app.kubernetes.io/component: gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # Matches the uid created in the Dockerfile.
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: soupcpy-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: soupcpy-gateway-config
+          # /health is a plain liveness signal: the process either serves or it
+          # does not. There is no warm-up, so the two probes can share it.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              # Memory only. A CPU limit on a media relay causes throttling that
+              # shows up as stutter in the video stream, so request CPU but do
+              # not cap it.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Graceful shutdown drains sockets; give it room to finish.
+          terminationMessagePolicy: FallbackToLogsOnError
+      terminationGracePeriodSeconds: 30

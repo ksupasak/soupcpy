@@ -9,13 +9,13 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
     && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release \
+    && cargo build --release --locked \
     && rm -rf src
 
 # templates/ is pulled in with include_str!, so it must exist at compile time.
 COPY src ./src
 COPY templates ./templates
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo build --release --locked
 
 # ---- runtime ---------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -38,7 +38,13 @@ COPY --from=builder /build/target/release/rust /usr/local/bin/soupcpy-gateway
 
 USER soupcpy
 
-ENV RUST_LOG=info
+# config/server.toml is the local-dev config and binds 127.0.0.1, which inside
+# a container makes the published port unreachable. Default the bind address
+# here so `docker run` works with no further configuration; every GATEWAY_*
+# variable stays overridable at run time.
+ENV GATEWAY_HOST=0.0.0.0 \
+    GATEWAY_PORT=3000 \
+    RUST_LOG=info
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

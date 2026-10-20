@@ -9,5 +9,9 @@ target/
 **/db/*.db
 **/db/*.sqlite
 
+# Local environment overrides; .env.example is the tracked template
+.env
+.env.local
+
 # Vendored third-party checkout (own git repo + node_modules)
 ws-scrcpy/
