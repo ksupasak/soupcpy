@@ -1,0 +1,32 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: soupcpy-gateway:latest
+    container_name: soupcpy-gateway
+    restart: unless-stopped
+    # Uses Docker's shared default bridge instead of a per-project network.
+    # This host has exhausted its network address pools (33 networks), and a
+    # dedicated network fails to create. Drop these two lines once you have run
+    # `docker network prune`, or if you add a second service that needs DNS
+    # resolution by service name.
+    network_mode: bridge
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      GATEWAY_CONFIG: /app/config/server.toml
+    volumes:
+      # Overlays the local-dev config (which binds 127.0.0.1) with one that
+      # binds 0.0.0.0. Edit config/server.docker.toml and restart to change
+      # the public host/port advertised to browsers.
+      - ./config/server.docker.toml:/app/config/server.toml:ro
+      # Uncomment to swap the ws-scrcpy bundle without rebuilding the image.
+      # - ./public:/app/public:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3

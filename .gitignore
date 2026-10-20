@@ -8,3 +8,6 @@ target/
 # Local databases
 **/db/*.db
 **/db/*.sqlite
+
+# Vendored third-party checkout (own git repo + node_modules)
+ws-scrcpy/
