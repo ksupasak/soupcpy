@@ -1226,23 +1226,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust"
-version = "0.1.0"
-dependencies = [
- "axum",
- "csv",
- "futures",
- "serde",
- "serde_json",
- "serde_yaml",
- "sqlx",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "rustix"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1505,6 +1488,23 @@ checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "soupcpy-agent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "csv",
+ "futures",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sqlx",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

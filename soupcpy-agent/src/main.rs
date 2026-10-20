@@ -553,7 +553,13 @@ impl From<ControllerCommandPayload> for ControllerCommand {
                 remote_url,
                 publisher_url,
             },
-            ControllerCommandPayload::Disconnect { publisher_udid, udid } => ControllerCommand::Disconnect { publisher_udid, udid },
+            ControllerCommandPayload::Disconnect {
+                publisher_udid,
+                udid,
+            } => ControllerCommand::Disconnect {
+                publisher_udid,
+                udid,
+            },
             ControllerCommandPayload::Snapshot => ControllerCommand::Snapshot,
         }
     }
@@ -593,7 +599,9 @@ fn parse_controller_command(text: &str) -> Option<ControllerCommand> {
                             "udid" => udid = Some(value.to_string()),
                             "publisher_udid" => publisher_udid = Some(value.to_string()),
                             "remote" | "remote_url" => remote_url = Some(value.to_string()),
-                            "publisher" | "publisher_url" => publisher_url = Some(value.to_string()),
+                            "publisher" | "publisher_url" => {
+                                publisher_url = Some(value.to_string())
+                            }
                             _ => return None,
                         }
                     }
@@ -608,7 +616,10 @@ fn parse_controller_command(text: &str) -> Option<ControllerCommand> {
         }
         "disconnect" => {
             if rest.is_empty() {
-                Some(ControllerCommand::Disconnect { publisher_udid: None, udid: None })
+                Some(ControllerCommand::Disconnect {
+                    publisher_udid: None,
+                    udid: None,
+                })
             } else {
                 let mut udid = None;
                 let mut publisher_udid = None;
@@ -623,19 +634,17 @@ fn parse_controller_command(text: &str) -> Option<ControllerCommand> {
                 }
                 Some(ControllerCommand::Disconnect {
                     publisher_udid,
-                    udid
-               
+                    udid,
                 })
             }
-            
-            
+
             // if let Some((key, value)) = rest.split_once('=') {
             //     if key.eq_ignore_ascii_case("udid") {
             //         Some(ControllerCommand::Disconnect {
             //             publisher_udid: None,
             //             udid: Some(value.to_string()),
             //         })
-            //     } else 
+            //     } else
             //     if key.eq_ignore_ascii_case("publisher_udid") {
             //         Some(ControllerCommand::Disconnect {
             //             publisher_udid: Some(value.to_string()),
@@ -887,7 +896,7 @@ async fn export_channels(
 
     let mut wtr = csv::Writer::from_writer(Vec::new());
     wtr.write_record(["name", "udid", "group", "code", "gw"])
-        .map_err(|err| internal_error(err))?;
+        .map_err(internal_error)?;
     for record in records {
         wtr.write_record([
             record.name,
@@ -896,12 +905,12 @@ async fn export_channels(
             record.code,
             record.gw.to_string(),
         ])
-        .map_err(|err| internal_error(err))?;
+        .map_err(internal_error)?;
     }
     let bytes = wtr
         .into_inner()
         .map_err(|err| internal_error(err.error()))?;
-    let csv_text = String::from_utf8(bytes).map_err(|err| internal_error(err))?;
+    let csv_text = String::from_utf8(bytes).map_err(internal_error)?;
 
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
@@ -1165,7 +1174,6 @@ fn build_remote_url(config: &AppConfig, udid: &str) -> String {
     }
 }
 
-
 fn build_publisher_url(config: &AppConfig, udid: &str) -> String {
     if config.publisher_endpoint.contains('?') {
         format!("{}&udid={udid}", config.publisher_endpoint)
@@ -1273,7 +1281,7 @@ async fn bridge_once(
                             .map_err(BridgeError::PublisherSend)?;
                     }
                     Some(Ok(WsMessage::Binary(data))) => {
-                   
+
                         publisher_write
                             .send(WsMessage::Binary(data))
                             .await
