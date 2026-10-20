@@ -25,7 +25,9 @@ WebSocket endpoints, a udid-keyed connection registry, the multiview UI, and the
 `sqlx` dependency, no tables, no data volume — and its `session_id` is a socket
 session, not a user session. Templates are compiled in with `include_str!`.
 
-Neither crate has any tests.
+The agent has no tests. The gateway gained 16 unit tests in `af8ebab` and
+`63f10f0`, covering `GATEWAY_*` config overrides and socket-session eviction;
+there is no database or router-level harness in either crate.
 
 ### What is being asked
 
@@ -367,8 +369,9 @@ next to the offending input.
 
 ## 10. Testing
 
-The harness is part of the deliverable: there are **zero tests today**, and every
-later phase inherits whatever this slice establishes.
+The harness is part of the deliverable. The gateway has 16 unit tests; what does
+not exist anywhere is a database-backed or router-level harness, and every later
+phase inherits whatever this slice establishes.
 
 - **`core`:** `#[sqlx::test]` gives each test its own throwaway Postgres
   database — real SQL, no mocks, no shared-state flake. Happy and failure path
